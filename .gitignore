@@ -11,5 +11,6 @@ segmentation_data/
 # Regenerated locally, not needed in git
 clone_log.txt
 
-# Local prediction test outputs
+# Local prediction/preprocessing test outputs
 outputs/predictions/
+outputs/preprocessed/

@@ -23,9 +23,12 @@ Causal inference is PARKED for later. Current focus: the KL-grade classifier.
   copied from Google Drive) plus locally trained `kl_*_best.pt` classifiers.
 - `outputs/results/` — training logs, test reports, confusion matrices,
   `kl_comparison.csv`. `outputs/predictions/` — single-image prediction figures.
+  `outputs/preprocessed/` — crops + debug images from `preprocess_xray.py`.
 - `scripts/prepare_dataset.py` — builds the two CSVs in `data/`.
 - `scripts/kl_common.py` — shared dataset, transforms, models, eval helper.
 - `scripts/train_classifier.py`, `scripts/evaluate_classifier.py`, `scripts/predict.py`.
+- `scripts/preprocess_xray.py` — auto-crops an arbitrary X-ray to a 224x224 joint
+  crop (see "Preprocessing" section below).
 
 ## Datasets — decisions already made, don't redo this analysis
 Source: OAI (Osteoarthritis Initiative), originally a Kaggle-derived export.
@@ -118,6 +121,55 @@ radiologists, not obviously a model bug. Full per-grade reports:
 matrices: `outputs/results/kl_{baseline,unet,unetpp}_confusion_matrix.png`.
 Comparison table: `outputs/results/kl_comparison.csv`.
 
+## Preprocessing for arbitrary input images — DONE (2026-10-18)
+`scripts/preprocess_xray.py` converts any knee X-ray (not just pre-cropped OAI-style
+images) into one or more 224x224 crops matching the training data, so `predict.py`
+can be pointed at a raw/uncropped X-ray from anywhere.
+
+- `prepare_xray(image_path, seg_model=None, device=None) -> list of (label, 224x224x3 RGB)`.
+  Loads a pre-loaded U-Net++ model if none is passed in.
+- Pipeline: load (PNG/JPG/BMP/TIFF/DICOM via pydicom, with window/rescale + MONOCHROME1
+  handling) → grayscale → trim uniform white/black borders → split into left/right
+  halves if the image is much wider than tall (two knees) → find the joint → crop →
+  resize to 224x224.
+- **Joint-finding**: runs the U-Net++ checkpoint (it was trained on CGMH's full-leg
+  images, so it works well on uncropped input - this is the point of reusing it here,
+  separate from its patchy performance as a classifier mask channel noted above) to
+  get a bone-probability map, then locates the row where bone coverage dips between
+  two bone masses (femur above, tibia below). **Must normalize the model's input with
+  the same ImageNet MEAN/STD used everywhere else in this project** - feeding it raw
+  [0,1] pixels produces an unusable, near-empty mask even though the checkpoint itself
+  is fine; this cost real debugging time, don't reintroduce it.
+- Crop size = `knee_width_at_joint * SCALE_FACTOR` (1.15, calibrated by eye against
+  real `dataset/test` crops - bones should fill nearly the full 224x224 frame, matching
+  training data, not leave a visible margin).
+- **Already-cropped detection**: if the input already looks like a dataset-style crop
+  (square, joint centered, bones filling the width, AND almost nothing was trimmed off
+  as border - this last check matters: a full-leg image can *coincidentally* end up
+  near-square and bone-filling after its letterbox bars are trimmed, so aspect ratio
+  alone isn't enough to tell it apart from a real tight crop), it's resized as-is
+  instead of re-cropped.
+- **Fallback chain**: mask → intensity (darkest horizontal band in the central region,
+  only used if there's a real dip - a flat/featureless image doesn't count as found) →
+  manual click (opens a window, you click the joint center). The click fallback is
+  untested here since triggering it needs an interactive display; the mask+intensity
+  chain was enough for every test image, including two low-quality screenshots that
+  previously gave bad predictions (see below).
+- **DICOM loading is implemented but untested** - no `.dcm` sample file was available.
+  Verify against a real file before relying on it.
+- Verified on: 5 full-leg CGMH images (`segmentation_data/Data/Image/`), 3 real
+  `dataset/test` crops (correctly detected as already-cropped and passed through), a
+  synthetic bilateral image (two real crops stitched side-by-side - split correctly),
+  and the two bad screenshot images from `Downloads/` that misled the classifier
+  earlier in the project (`grade1.png`, `kl grade2.png` - mostly blank canvas with a
+  tiny embedded X-ray). Border-trimming alone fixes those: `grade1.png`'s prediction
+  changed from KL3 at 30.7% confidence (wrong) to KL1 at 43.0% (correct) once run
+  through `--auto-crop`. Comparison figure: `outputs/results/preprocess_check.png`.
+- **`predict.py --auto-crop`** (works in both direct-path and file-browser modes):
+  runs `prepare_xray` first, classifies each resulting knee separately (bilateral
+  images produce multiple results), and shows the *cropped* image in the result
+  window/figure, not the original.
+
 ## XAI (after the classifier)
 - Grad-CAM on the best classifier; check attention overlaps the joint region using
   the U-Net++ masks.
@@ -145,7 +197,8 @@ Comparison table: `outputs/results/kl_comparison.csv`.
 ## Commands
 python scripts/train_classifier.py --mask-source none|unet|unetpp
 python scripts/evaluate_classifier.py --mask-source none|unet|unetpp
-python scripts/predict.py path/to/xray.png --run baseline|unet|unetpp [--show]
+python scripts/predict.py path/to/xray.png --run baseline|unet|unetpp [--show] [--auto-crop]
+python scripts/preprocess_xray.py path/to/xray.png --out-dir outputs/preprocessed
 
 ## Current status
 Done: dataset cleanup (`prepare_dataset.py`, CSVs verified); Python 3.12 venv with
@@ -153,9 +206,13 @@ PyTorch+CUDA; CGMH dataset cloned; segmentation trained and evaluated in Colab
 (4 models); U-Net and U-Net++ selected; classifier scripts written; `requirements.txt`
 installed; all three classifier runs (baseline/unet/unetpp) trained and evaluated
 on the test set (see results table in the Classifier section) — baseline has the
-best QWK (0.8246).
+best QWK (0.8246); `preprocess_xray.py` built and verified (see Preprocessing
+section), wired into `predict.py --auto-crop`.
 
 Next: decide which classifier to carry forward (baseline looks like the pick given
 the mask-quality caveat) and move on to Grad-CAM XAI on it, validated against the
 U-Net++ masks. Retraining segmentation on OAI-scale crops (to fix the patchy-mask
 issue) is an open option if the mask channel is revisited later, but not decided yet.
+Preprocessing follow-ups if it matters later: validate DICOM loading against a real
+file, and get a real bilateral X-ray to test the split logic (only synthetically
+tested so far).

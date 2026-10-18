@@ -16,6 +16,7 @@ import torch.nn.functional as F
 import matplotlib
 
 from kl_common import (build_classifier, load_seg_model, MEAN, STD, IMG_SIZE, SEG_SIZE, KL_TEXT)
+from preprocess_xray import prepare_xray
 
 
 def to_tensor(rgb, size, device):
@@ -32,21 +33,31 @@ def load_models(run, ckpt_dir, device):
     return seg_model, classifier
 
 
-def predict_image(image_path, seg_model, classifier, run, device):
-    """Returns the RGB image and the 5 class probabilities."""
-    img = cv2.imread(image_path, cv2.IMREAD_COLOR)
-    if img is None:
-        raise ValueError(f"Could not read {image_path}. Use a PNG or JPG file.")
-    img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
-
+def classify_rgb(img, seg_model, classifier, run, device):
+    """Classifies an already-loaded RGB image. Returns the 5 class probabilities."""
     with torch.no_grad():
         x = to_tensor(img, IMG_SIZE, device)
         if run != "baseline":
             prob_map = torch.sigmoid(seg_model(F.interpolate(x, size=(SEG_SIZE, SEG_SIZE), mode="bilinear", align_corners=False)))
             x = torch.cat([x, F.interpolate(prob_map, size=(IMG_SIZE, IMG_SIZE), mode="bilinear", align_corners=False)], dim=1)
         probs = torch.softmax(classifier(x), dim=1).squeeze().cpu().numpy()
+    return probs
 
+
+def predict_image(image_path, seg_model, classifier, run, device):
+    """Loads an image from disk and returns it (RGB) plus the 5 class probabilities."""
+    img = cv2.imread(image_path, cv2.IMREAD_COLOR)
+    if img is None:
+        raise ValueError(f"Could not read {image_path}. Use a PNG or JPG file.")
+    img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+    probs = classify_rgb(img, seg_model, classifier, run, device)
     return img, probs
+
+
+def predict_image_auto_crop(image_path, crop_seg_model, seg_model, classifier, run, device):
+    """Auto-crops (bilateral-aware) then classifies each knee. Returns a list of (label, crop_rgb, probs)."""
+    crops = prepare_xray(image_path, crop_seg_model, device)
+    return [(label, crop, classify_rgb(crop, seg_model, classifier, run, device)) for label, crop in crops]
 
 
 def report(image_path, img, probs, out_dir, plt):
@@ -97,6 +108,9 @@ def main():
     ap.add_argument("--ckpt-dir", default="outputs/checkpoints")
     ap.add_argument("--out-dir", default="outputs/predictions")
     ap.add_argument("--show", action="store_true", help="Open the result window (always on in file-browser mode)")
+    ap.add_argument("--auto-crop", action="store_true",
+                     help="Auto-crop the input to a 224x224 joint crop before classifying "
+                          "(handles full-leg X-rays, bilateral images, arbitrary sizes)")
     args = ap.parse_args()
 
     interactive = args.image is None
@@ -107,12 +121,25 @@ def main():
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Loading models ({args.run}) on {device}...")
     seg_model, classifier = load_models(args.run, args.ckpt_dir, device)
+    crop_seg_model = load_seg_model("unetpp", args.ckpt_dir, device) if args.auto_crop else None
+
+    def handle(path):
+        if args.auto_crop:
+            for label, crop, probs in predict_image_auto_crop(path, crop_seg_model, seg_model, classifier, args.run, device):
+                tag = f"{os.path.splitext(os.path.basename(path))[0]}_{label}"
+                report(tag, crop, probs, args.out_dir, plt)
+                if args.show or interactive:
+                    plt.show()
+                plt.close("all")
+        else:
+            img, probs = predict_image(path, seg_model, classifier, args.run, device)
+            report(path, img, probs, args.out_dir, plt)
+            if args.show or interactive:
+                plt.show()
+            plt.close("all")
 
     if not interactive:
-        img, probs = predict_image(args.image, seg_model, classifier, args.run, device)
-        report(args.image, img, probs, args.out_dir, plt)
-        if args.show:
-            plt.show()
+        handle(args.image)
         return
 
     print("Choose an X-ray in the file browser. Close the result window to pick another; press Cancel to quit.")
@@ -122,13 +149,10 @@ def main():
             print("No file selected. Exiting.")
             break
         try:
-            img, probs = predict_image(path, seg_model, classifier, args.run, device)
+            handle(path)
         except ValueError as e:
             print(e)
             continue
-        report(path, img, probs, args.out_dir, plt)
-        plt.show()      # waits here until you close the result window
-        plt.close("all")
 
 
 if __name__ == "__main__":
