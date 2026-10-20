@@ -14,3 +14,16 @@ clone_log.txt
 # Local prediction/preprocessing test outputs
 outputs/predictions/
 outputs/preprocessed/
+
+# Intermediate backbone/ablation search checkpoints (~1.8GB, reproducible via the commands
+# in CLAUDE.md / overnight_log.md) - only kl_final_best.pt (the winner) is kept
+outputs/checkpoints/kl_baseline_convnext_tiny*
+outputs/checkpoints/kl_baseline_resnet50_best.pt
+outputs/checkpoints/kl_baseline_densenet121_best.pt
+outputs/checkpoints/kl_baseline_efficientnet_b0_best.pt
+outputs/checkpoints/kl_baseline_efficientnet_b0_seed*
+
+# Raw stdout dumps from the overnight run - superseded by the structured training_log.csv
+# files and the overnight_log.md narrative
+outputs/results/_train_*.txt
+outputs/results/_abl_*.txt

@@ -10,7 +10,10 @@ from torch.utils.data import Dataset
 import albumentations as A
 from albumentations.pytorch import ToTensorV2
 import segmentation_models_pytorch as smp
-from torchvision.models import efficientnet_b0, EfficientNet_B0_Weights
+from torchvision.models import (efficientnet_b0, EfficientNet_B0_Weights,
+                                resnet50, ResNet50_Weights,
+                                densenet121, DenseNet121_Weights,
+                                convnext_tiny, ConvNeXt_Tiny_Weights)
 
 MEAN = (0.485, 0.456, 0.406)
 STD = (0.229, 0.224, 0.225)
@@ -19,10 +22,14 @@ SEG_SIZE = 256          # size the segmentation models were trained at
 GRADES = ["KL0", "KL1", "KL2", "KL3", "KL4"]
 KL_TEXT = {0: "No osteoarthritis", 1: "Doubtful", 2: "Minimal", 3: "Moderate", 4: "Severe"}
 SEG_CKPTS = {"unet": "unet_best.pt", "unetpp": "unetpp_best.pt"}
+BACKBONES = ["efficientnet_b0", "resnet50", "densenet121", "convnext_tiny"]
 
 
-def run_name(mask_source):
-    return f"kl_{mask_source}" if mask_source in SEG_CKPTS else "kl_baseline"
+def run_name(mask_source, backbone):
+    """Backbone is always part of the name so new runs never overwrite the original
+    kl_baseline/kl_unet/kl_unetpp results from the efficientnet_b0-only comparison."""
+    base = f"kl_{mask_source}" if mask_source in SEG_CKPTS else "kl_baseline"
+    return f"{base}_{backbone}"
 
 
 def list_split(data_root, split):
@@ -44,9 +51,17 @@ def get_transforms():
     return train_tf, eval_tf
 
 
+def apply_clahe(img_rgb):
+    """CLAHE (clipLimit 2.0, tile 8x8) on the grayscale version of an RGB image, then back to 3 channels."""
+    gray = cv2.cvtColor(img_rgb, cv2.COLOR_RGB2GRAY)
+    clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
+    gray = clahe.apply(gray)
+    return cv2.cvtColor(gray, cv2.COLOR_GRAY2RGB)
+
+
 class KLDataset(Dataset):
-    def __init__(self, paths, labels, transform):
-        self.paths, self.labels, self.transform = paths, labels, transform
+    def __init__(self, paths, labels, transform, use_clahe=False):
+        self.paths, self.labels, self.transform, self.use_clahe = paths, labels, transform, use_clahe
 
     def __len__(self):
         return len(self.paths)
@@ -56,22 +71,140 @@ class KLDataset(Dataset):
         if img is None:
             raise ValueError(f"Could not read image: {self.paths[i]}")
         img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+        if self.use_clahe:
+            img = apply_clahe(img)
         return self.transform(image=img)["image"], self.labels[i]
 
 
-def build_classifier(in_ch, pretrained=True):
-    """EfficientNet-B0 with a 5-class head. in_ch=4 adds a channel for the bone mask."""
-    m = efficientnet_b0(weights=EfficientNet_B0_Weights.IMAGENET1K_V1 if pretrained else None)
-    if in_ch == 4:
-        old = m.features[0][0]
-        new = nn.Conv2d(4, old.out_channels, kernel_size=old.kernel_size, stride=old.stride,
-                        padding=old.padding, bias=False)
-        with torch.no_grad():
-            new.weight[:, :3] = old.weight
-            new.weight[:, 3:] = old.weight.mean(dim=1, keepdim=True)
-        m.features[0][0] = new
-    m.classifier[1] = nn.Linear(m.classifier[1].in_features, 5)
+def _expand_to_4ch(old_conv):
+    """Builds a 4-input-channel copy of a conv layer: first 3 channels keep the pretrained
+    weights, the 4th (mask channel) starts as their average."""
+    new_conv = nn.Conv2d(4, old_conv.out_channels, kernel_size=old_conv.kernel_size,
+                         stride=old_conv.stride, padding=old_conv.padding,
+                         bias=old_conv.bias is not None)
+    with torch.no_grad():
+        new_conv.weight[:, :3] = old_conv.weight
+        new_conv.weight[:, 3:] = old_conv.weight.mean(dim=1, keepdim=True)
+        if old_conv.bias is not None:
+            new_conv.bias[:] = old_conv.bias
+    return new_conv
+
+
+class CBAM(nn.Module):
+    """Channel + spatial attention (Woo et al. 2018), applied to a conv feature map."""
+    def __init__(self, channels, reduction=16, kernel_size=7):
+        super().__init__()
+        hidden = max(channels // reduction, 8)
+        self.mlp = nn.Sequential(nn.Conv2d(channels, hidden, 1, bias=False), nn.ReLU(inplace=True),
+                                 nn.Conv2d(hidden, channels, 1, bias=False))
+        self.avg_pool = nn.AdaptiveAvgPool2d(1)
+        self.max_pool = nn.AdaptiveMaxPool2d(1)
+        self.spatial_conv = nn.Conv2d(2, 1, kernel_size, padding=kernel_size // 2, bias=False)
+
+    def forward(self, x):
+        ch_att = torch.sigmoid(self.mlp(self.avg_pool(x)) + self.mlp(self.max_pool(x)))
+        x = x * ch_att
+        avg_out = x.mean(dim=1, keepdim=True)
+        max_out, _ = x.max(dim=1, keepdim=True)
+        sp_att = torch.sigmoid(self.spatial_conv(torch.cat([avg_out, max_out], dim=1)))
+        return x * sp_att, sp_att
+
+
+class ConvNeXtCBAM(nn.Module):
+    """Wraps a convnext_tiny model with CBAM on its final feature map, before pooling/classifier."""
+    def __init__(self, base, channels):
+        super().__init__()
+        self.features = base.features
+        self.cbam = CBAM(channels)
+        self.avgpool = base.avgpool
+        self.classifier = base.classifier
+        self.last_attn = None   # most recent spatial attention map, for visualization
+
+    def forward(self, x):
+        x = self.features(x)
+        x, attn = self.cbam(x)
+        self.last_attn = attn.detach()
+        x = self.avgpool(x)
+        return self.classifier(x)
+
+
+def build_classifier(backbone, in_ch, pretrained=True, out_dim=5, attention=None):
+    """ImageNet-pretrained backbone with a classification head. in_ch=4 adds a channel for the
+    bone mask. out_dim=4 switches to a CORAL ordinal head (see coral_loss/coral_decode).
+    attention="cbam" wraps convnext_tiny's final feature map with a CBAM block (unsupported
+    for other backbones - this project only asked for it on convnext_tiny)."""
+    if backbone == "efficientnet_b0":
+        m = efficientnet_b0(weights=EfficientNet_B0_Weights.IMAGENET1K_V1 if pretrained else None)
+        if in_ch == 4:
+            m.features[0][0] = _expand_to_4ch(m.features[0][0])
+        m.classifier[1] = nn.Linear(m.classifier[1].in_features, out_dim)
+    elif backbone == "resnet50":
+        m = resnet50(weights=ResNet50_Weights.IMAGENET1K_V2 if pretrained else None)
+        if in_ch == 4:
+            m.conv1 = _expand_to_4ch(m.conv1)
+        m.fc = nn.Linear(m.fc.in_features, out_dim)
+    elif backbone == "densenet121":
+        m = densenet121(weights=DenseNet121_Weights.IMAGENET1K_V1 if pretrained else None)
+        if in_ch == 4:
+            m.features.conv0 = _expand_to_4ch(m.features.conv0)
+        m.classifier = nn.Linear(m.classifier.in_features, out_dim)
+    elif backbone == "convnext_tiny":
+        m = convnext_tiny(weights=ConvNeXt_Tiny_Weights.IMAGENET1K_V1 if pretrained else None)
+        if in_ch == 4:
+            m.features[0][0] = _expand_to_4ch(m.features[0][0])
+        in_f = m.classifier[2].in_features
+        m.classifier[2] = nn.Linear(in_f, out_dim)
+        if attention == "cbam":
+            m = ConvNeXtCBAM(m, channels=in_f)
+    else:
+        raise ValueError(f"Unknown backbone: {backbone} (choices: {BACKBONES})")
+    if attention == "cbam" and backbone != "convnext_tiny":
+        raise ValueError("CBAM is only wired up for convnext_tiny in this project")
     return m
+
+
+def compute_class_weights(train_y, mode, device):
+    """mode: 'inverse' (default, matches the original recipe), 'sqrt', or 'none'."""
+    counts = np.bincount(train_y, minlength=5)
+    if mode == "none":
+        return torch.ones(5, dtype=torch.float32, device=device)
+    inv = len(train_y) / (5 * counts)
+    if mode == "sqrt":
+        inv = np.sqrt(inv)
+    return torch.tensor(inv, dtype=torch.float32, device=device)
+
+
+def coral_targets(y, num_thresholds=4):
+    """y: (N,) ints 0-4 -> (N, num_thresholds) binary targets, target[:,k] = 1 if y > k."""
+    thresholds = torch.arange(num_thresholds, device=y.device)
+    return (y.unsqueeze(1) > thresholds).float()
+
+
+def coral_pos_weights(train_y, device, mode="inverse", num_thresholds=4):
+    """Per-threshold BCE pos_weight = n_negative / n_positive, from the training label distribution.
+    mode mirrors compute_class_weights: 'inverse' (default) uses the ratio as-is, 'sqrt' takes its
+    square root (gentler weighting), 'none' disables weighting (all 1s)."""
+    y = torch.tensor(train_y)
+    targets = coral_targets(y, num_thresholds)
+    pos = targets.sum(dim=0).clamp(min=1)
+    neg = (len(y) - targets.sum(dim=0)).clamp(min=1)
+    w = neg / pos
+    if mode == "none":
+        w = torch.ones_like(w)
+    elif mode == "sqrt":
+        w = torch.sqrt(w)
+    return w.to(device)
+
+
+def coral_loss(logits, y, pos_weight):
+    """4 independent binary 'grade > k' losses, each weighted for its own class imbalance."""
+    targets = coral_targets(y, logits.shape[1])
+    return F.binary_cross_entropy_with_logits(logits, targets, pos_weight=pos_weight)
+
+
+def coral_probs_to_grade(probs):
+    """probs: (N,4) sigmoid outputs -> (N,) predicted grade = count of thresholds exceeded."""
+    return (probs > 0.5).sum(dim=1)
 
 
 def load_seg_model(kind, ckpt_dir, device):
@@ -99,31 +232,36 @@ def add_mask_channel(imgs, seg_model):
     return torch.cat([imgs, prob.to(imgs.dtype)], dim=1)
 
 
-def run_eval(model, loader, seg_model, device, use_amp):
+def _forward_probs(model, imgs, seg_model, device, use_amp, loss_type):
+    """One forward pass -> (N, 5) softmax [ce] or (N, 4) sigmoid-threshold-probs [coral]."""
+    x = add_mask_channel(imgs.to(device), seg_model)
+    with torch.amp.autocast("cuda", enabled=use_amp):
+        logits = model(x)
+    if loss_type == "coral":
+        return torch.sigmoid(logits.float())
+    return torch.softmax(logits.float(), dim=1)
+
+
+def run_eval(model, loader, seg_model, device, use_amp, loss_type="ce", tta=False):
     """Returns predicted grades and true grades for a whole loader."""
-    model.eval()
-    preds, labels = [], []
-    with torch.no_grad():
-        for imgs, y in loader:
-            imgs = add_mask_channel(imgs.to(device), seg_model)
-            with torch.amp.autocast("cuda", enabled=use_amp):
-                logits = model(imgs)
-            preds.append(logits.argmax(1).cpu())
-            labels.append(y)
-    return torch.cat(preds).numpy(), torch.cat(labels).numpy()
+    preds, labels, _ = run_eval_probs(model, loader, seg_model, device, use_amp, loss_type, tta)
+    return preds, labels
 
 
-def run_eval_probs(model, loader, seg_model, device, use_amp):
-    """Like run_eval, but also returns the per-class softmax probabilities."""
+def run_eval_probs(model, loader, seg_model, device, use_amp, loss_type="ce", tta=False):
+    """Returns predicted grades, true grades, and the raw per-threshold/per-class probabilities
+    (5-dim softmax for loss_type="ce", 4-dim sigmoid "P(grade>k)" for loss_type="coral").
+    tta=True averages the probabilities of each image with its horizontal flip."""
     model.eval()
     preds, labels, probs = [], [], []
     with torch.no_grad():
         for imgs, y in loader:
-            imgs = add_mask_channel(imgs.to(device), seg_model)
-            with torch.amp.autocast("cuda", enabled=use_amp):
-                logits = model(imgs)
-            p = torch.softmax(logits.float(), dim=1)
-            preds.append(p.argmax(1).cpu())
+            p = _forward_probs(model, imgs, seg_model, device, use_amp, loss_type)
+            if tta:
+                flipped = torch.flip(imgs, dims=[3])
+                p = (p + _forward_probs(model, flipped, seg_model, device, use_amp, loss_type)) / 2
+            pred = coral_probs_to_grade(p) if loss_type == "coral" else p.argmax(1)
+            preds.append(pred.cpu())
             labels.append(y)
             probs.append(p.cpu())
     return torch.cat(preds).numpy(), torch.cat(labels).numpy(), torch.cat(probs).numpy()

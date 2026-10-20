@@ -15,8 +15,11 @@ import torch
 import torch.nn.functional as F
 import matplotlib
 
-from kl_common import (build_classifier, load_seg_model, MEAN, STD, IMG_SIZE, SEG_SIZE, KL_TEXT)
+from kl_common import (build_classifier, load_seg_model, apply_clahe, coral_probs_to_grade,
+                       MEAN, STD, IMG_SIZE, SEG_SIZE, KL_TEXT)
 from preprocess_xray import prepare_xray
+
+RUNS = ["final", "baseline", "unet", "unetpp"]
 
 
 def to_tensor(rgb, size, device):
@@ -24,45 +27,67 @@ def to_tensor(rgb, size, device):
     return torch.tensor(x.transpose(2, 0, 1), dtype=torch.float32).unsqueeze(0).to(device)
 
 
+def coral_display_probs(thresh_probs):
+    """Converts CORAL's 4 'P(grade>k)' outputs into a 5-length per-grade distribution for display
+    (p0=1-P(>0), pk=P(>k-1)-P(>k), p4=P(>3)), clipped and renormalized in case thresholds aren't
+    perfectly monotonic."""
+    p = np.concatenate([[1.0], thresh_probs]) - np.concatenate([thresh_probs, [0.0]])
+    p = np.clip(p, 0, None)
+    return p / p.sum()
+
+
 def load_models(run, ckpt_dir, device):
     """Loads the segmentation model (only needed for the unet/unetpp mask channel) and the classifier once."""
-    seg_model = load_seg_model("unet" if run == "unet" else "unetpp", ckpt_dir, device) if run != "baseline" else None
-    classifier = build_classifier(3 if run == "baseline" else 4, pretrained=False).to(device)
-    classifier.load_state_dict(torch.load(os.path.join(ckpt_dir, f"kl_{run}_best.pt"), map_location=device))
+    if run == "final":
+        seg_model = None
+        classifier = build_classifier("convnext_tiny", 3, pretrained=False, out_dim=4, attention="cbam").to(device)
+        classifier.load_state_dict(torch.load(os.path.join(ckpt_dir, "kl_final_best.pt"), map_location=device))
+    else:
+        seg_model = load_seg_model("unet" if run == "unet" else "unetpp", ckpt_dir, device) if run != "baseline" else None
+        classifier = build_classifier("efficientnet_b0", 3 if run == "baseline" else 4, pretrained=False).to(device)
+        classifier.load_state_dict(torch.load(os.path.join(ckpt_dir, f"kl_{run}_best.pt"), map_location=device))
     classifier.eval()
     return seg_model, classifier
 
 
 def classify_rgb(img, seg_model, classifier, run, device):
-    """Classifies an already-loaded RGB image. Returns the 5 class probabilities."""
+    """Classifies an already-loaded RGB image. Returns (predicted grade, 5-length display probabilities)."""
+    if run == "final":
+        img = apply_clahe(img)
     with torch.no_grad():
         x = to_tensor(img, IMG_SIZE, device)
-        if run != "baseline":
+        if run in ("unet", "unetpp"):
             prob_map = torch.sigmoid(seg_model(F.interpolate(x, size=(SEG_SIZE, SEG_SIZE), mode="bilinear", align_corners=False)))
             x = torch.cat([x, F.interpolate(prob_map, size=(IMG_SIZE, IMG_SIZE), mode="bilinear", align_corners=False)], dim=1)
-        probs = torch.softmax(classifier(x), dim=1).squeeze().cpu().numpy()
-    return probs
+        logits = classifier(x)
+        if run == "final":
+            thresh_probs = torch.sigmoid(logits).squeeze().cpu().numpy()
+            grade = int(coral_probs_to_grade(torch.sigmoid(logits)).item())
+            probs = coral_display_probs(thresh_probs)
+        else:
+            probs = torch.softmax(logits, dim=1).squeeze().cpu().numpy()
+            grade = int(probs.argmax())
+    return grade, probs
 
 
 def predict_image(image_path, seg_model, classifier, run, device):
-    """Loads an image from disk and returns it (RGB) plus the 5 class probabilities."""
+    """Loads an image from disk and returns it (RGB), the predicted grade, and display probabilities."""
     img = cv2.imread(image_path, cv2.IMREAD_COLOR)
     if img is None:
         raise ValueError(f"Could not read {image_path}. Use a PNG or JPG file.")
     img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
-    probs = classify_rgb(img, seg_model, classifier, run, device)
-    return img, probs
+    grade, probs = classify_rgb(img, seg_model, classifier, run, device)
+    return img, grade, probs
 
 
 def predict_image_auto_crop(image_path, crop_seg_model, seg_model, classifier, run, device):
-    """Auto-crops (bilateral-aware) then classifies each knee. Returns a list of (label, crop_rgb, probs)."""
+    """Auto-crops (bilateral-aware) then classifies each knee. Returns a list of (label, crop_rgb, grade, probs)."""
     crops = prepare_xray(image_path, crop_seg_model, device)
-    return [(label, crop, classify_rgb(crop, seg_model, classifier, run, device)) for label, crop in crops]
+    return [(label, crop, *classify_rgb(crop, seg_model, classifier, run, device)) for label, crop in crops]
 
 
-def report(image_path, img, probs, out_dir, plt):
+def report(image_path, img, grade, probs, out_dir, plt):
     """Prints the prediction and builds + saves the result figure."""
-    grade = int(probs.argmax())
     print(f"\nImage: {image_path}")
     print(f"Predicted KL grade: {grade} - {KL_TEXT[grade]} ({probs[grade] * 100:.1f}% confidence)")
     for g in range(5):
@@ -103,8 +128,8 @@ def pick_file():
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("image", nargs="?", help="Path to a knee X-ray. Leave out to choose with a file browser.")
-    ap.add_argument("--run", choices=["baseline", "unet", "unetpp"], default="baseline",
-                    help="Which trained classifier to use")
+    ap.add_argument("--run", choices=RUNS, default="final",
+                    help="Which trained classifier to use (final = the locked ConvNeXt-tiny+CLAHE+CBAM+CORAL model)")
     ap.add_argument("--ckpt-dir", default="outputs/checkpoints")
     ap.add_argument("--out-dir", default="outputs/predictions")
     ap.add_argument("--show", action="store_true", help="Open the result window (always on in file-browser mode)")
@@ -125,15 +150,15 @@ def main():
 
     def handle(path):
         if args.auto_crop:
-            for label, crop, probs in predict_image_auto_crop(path, crop_seg_model, seg_model, classifier, args.run, device):
+            for label, crop, grade, probs in predict_image_auto_crop(path, crop_seg_model, seg_model, classifier, args.run, device):
                 tag = f"{os.path.splitext(os.path.basename(path))[0]}_{label}"
-                report(tag, crop, probs, args.out_dir, plt)
+                report(tag, crop, grade, probs, args.out_dir, plt)
                 if args.show or interactive:
                     plt.show()
                 plt.close("all")
         else:
-            img, probs = predict_image(path, seg_model, classifier, args.run, device)
-            report(path, img, probs, args.out_dir, plt)
+            img, grade, probs = predict_image(path, seg_model, classifier, args.run, device)
+            report(path, img, grade, probs, args.out_dir, plt)
             if args.show or interactive:
                 plt.show()
             plt.close("all")

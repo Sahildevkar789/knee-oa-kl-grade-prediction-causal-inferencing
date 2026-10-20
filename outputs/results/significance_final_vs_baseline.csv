@@ -1,0 +1,3 @@
+Metric,MeanDiff,CI_low,CI_high,Significant_95pct,Resamples
+QWK (kl_final - kl_baseline),0.0324,0.0174,0.0478,True,2000
+Accuracy (kl_final - kl_baseline),0.0653,0.0399,0.0918,True,2000

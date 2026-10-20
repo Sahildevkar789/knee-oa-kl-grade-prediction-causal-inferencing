@@ -20,9 +20,12 @@ Causal inference is PARKED for later. Current focus: the KL-grade classifier.
 - `notebooks/` — Colab segmentation notebook, kept as a record only. Do NOT rerun
   or convert it; segmentation is finished.
 - `outputs/checkpoints/` — `unet_best.pt`, `unetpp_best.pt` (trained in Colab,
-  copied from Google Drive) plus locally trained `kl_*_best.pt` classifiers.
+  copied from Google Drive); `kl_final_best.pt` + `kl_final_config.json` (the locked
+  classifier, see below); other `kl_*_best.pt` from the backbone/ablation search.
 - `outputs/results/` — training logs, test reports, confusion matrices,
-  `kl_comparison.csv`. `outputs/predictions/` — single-image prediction figures.
+  `kl_comparison.csv`, `backbone_comparison.csv`, `ablation.csv`, `final_test_report.csv`,
+  `significance_final_vs_baseline.csv`, `classifier_summary.md`, `overnight_log.md`,
+  `cbam_maps/`. `outputs/predictions/` — single-image prediction figures.
   `outputs/preprocessed/` — crops + debug images from `preprocess_xray.py`.
 - `scripts/prepare_dataset.py` — builds the two CSVs in `data/`.
 - `scripts/kl_common.py` — shared dataset, transforms, models, eval helper.
@@ -80,46 +83,54 @@ Source: OAI (Osteoarthritis Initiative), originally a Kaggle-derived export.
   needed before classification. Masks are used as an optional 4th input channel
   (see below) and later for Grad-CAM validation.
 
-## Classifier — three runs DONE (2026-09-25), reviewing results
-- EfficientNet-B0 (ImageNet pretrained), 224x224, class-weighted cross-entropy,
-  AdamW lr 3e-4 + cosine schedule, early stopping on val QWK (patience 6,
-  max 25 epochs). Augmentation: horizontal flip, rotation ±10°, brightness/contrast.
-  Trained locally with `--workers 0` (no DataLoader issues hit).
-- Three runs compared (same setup otherwise):
-  - `baseline` — image only (3 channels)
-  - `unet` — image + frozen U-Net bone-probability map as a 4th channel
-  - `unetpp` — image + frozen U-Net++ bone-probability map as a 4th channel
-- **Headline metric: Quadratic Weighted Kappa (QWK).** Also accuracy, macro F1,
-  per-grade precision/recall/F1 (esp. KL3/KL4 recall), 5x5 confusion matrix.
-  Never rely on raw accuracy alone (always-predict-KL0 gets ~40%).
-- Test split used only for final evaluation, never for model selection.
-- Do not change model, loss, split or hyperparameters between the three runs
-  without asking — they must stay comparable.
-- **Important caveat on the unet/unetpp runs:** they use the original CGMH-trained
-  U-Net/U-Net++ checkpoints (full-leg images, knee small in the frame — see the
-  Segmentation section's known scale-mismatch issue). On OAI's tight joint
-  close-ups the resulting bone-probability masks are patchy, so the 4th channel
-  is a noisier signal than it would be from masks retrained on OAI-scale crops.
-  That retrain was never done — keep this in mind when interpreting why the mask
-  channel didn't clearly beat the baseline below.
+## Classifier — LOCKED as of 2026-10-21 (`kl_final`)
+Full history: backbone comparison → warmup check → 5-axis ablation → final model → test +
+bootstrap → wired into `predict.py`. Done as one unattended overnight run; every decision
+and its reason is in `outputs/results/overnight_log.md` (including a real bug caught and
+fixed mid-run: `coral_pos_weights` initially ignored `--class-weights` entirely). Full
+write-up with tables: `outputs/results/classifier_summary.md`.
 
-### Test-set results (1,655 images), 2026-09-25
-| Run | Accuracy | QWK | Macro F1 | Recall KL3 | Recall KL4 |
-|---|---|---|---|---|---|
-| baseline | 0.6284 | **0.8246** | 0.6746 | 0.7713 | 0.90 |
-| unet | 0.6544 | 0.8130 | 0.6714 | 0.7309 | 0.86 |
-| unetpp | 0.6508 | 0.8144 | 0.6542 | 0.7623 | 0.90 |
+### Final model: `kl_final`
+**Pipeline**: grayscale → CLAHE (clipLimit 2.0, 8x8 tiles) → convnext_tiny (ImageNet
+pretrained, 2-epoch linear LR warmup then cosine) → CBAM (channel+spatial attention) on the
+final feature map → CORAL ordinal head (4 binary "grade>k" outputs, inverse-frequency
+pos_weight per threshold) → predicted grade = count of thresholds with sigmoid > 0.5.
+Checkpoint: `outputs/checkpoints/kl_final_best.pt` (seed 42, the better of 2 seed runs at
+this config). Full option list: `outputs/checkpoints/kl_final_config.json`.
 
-**Baseline (image-only) has the best QWK.** Adding either mask channel gave a
-small accuracy bump but a lower QWK and (for unetpp) lower macro F1 — consistent
-with the patchy-mask caveat above. KL1 ("doubtful OA") is the weak class across
-all three runs (precision 0.31-0.36) — this boundary is subjective even between
-radiologists, not obviously a model bug. Full per-grade reports:
-`outputs/results/kl_{baseline,unet,unetpp}_test_report.csv`. Per-image predictions
-(path, true/predicted grade, all 5 class probabilities):
-`outputs/results/kl_{baseline,unet,unetpp}_test_predictions.csv`. Confusion
-matrices: `outputs/results/kl_{baseline,unet,unetpp}_confusion_matrix.png`.
-Comparison table: `outputs/results/kl_comparison.csv`.
+**Test results** (1,655 images, evaluated once): Accuracy **0.6937**, QWK **0.8570**,
+Macro F1 **0.6926**, MAE **0.3396** — vs the original `kl_baseline` (EfficientNet-B0,
+image-only): Accuracy 0.6284, QWK 0.8246, Macro F1 0.6746, MAE 0.4036. Paired bootstrap
+(2,000 resamples) confirms both the QWK gain (+0.0324, 95% CI [0.017, 0.048]) and accuracy
+gain (+0.0653, 95% CI [0.040, 0.092]) are statistically significant.
+`outputs/results/final_test_report.csv`, `significance_final_vs_baseline.csv`.
+
+**How it was built** (val QWK only, test set untouched until the final eval above):
+1. **Backbone**: 4 ImageNet backbones, image-only, 3 seeds each for the top contenders.
+   convnext_tiny won on mean QWK (0.8187±0.011 across seeds 42/7/123) vs efficientnet_b0's
+   0.8078±0.003 — note convnext_tiny's variance is ~3.5x higher, so its single-seed Step 1
+   number was partly a favorable draw.
+2. **Warmup**: 2 epochs kept (0.8315 vs 0.8312 without — a tie, but it visibly smoothed the
+   early-epoch instability convnext_tiny otherwise shows, e.g. epoch-3 QWK dip 0.43→0.59).
+3. **Ablation** (2 seeds each, sequential, each change built on the prior best): **+CLAHE**
+   adopted (0.8286→0.8340, and variance shrank too). **+CBAM** adopted (→0.8368). **+CORAL**
+   adopted (→0.8416, biggest single gain, best KL0 recall of any config at 0.80). **class-
+   weights sqrt** rejected (→0.8346, gutted KL3 recall 0.79→0.66 for little KL4 gain). **TTA**
+   (horizontal-flip averaging) rejected (→0.8363) — plausibly because flipping a knee X-ray
+   swaps medial/lateral anatomy rather than being a harmless symmetry.
+4. CBAM attention maps for 10 val images (2/grade): `outputs/results/cbam_maps/`.
+
+KL1 ("doubtful OA") is still the weakest class for both models — a known, clinically
+subjective boundary even between radiologists, not something either architecture resolved.
+
+### Superseded: original 3-run comparison (2026-09-25)
+Before the work above, `kl_baseline`/`kl_unet`/`kl_unetpp` (all EfficientNet-B0, image vs
+image+U-Net-mask vs image+U-Net++-mask) were compared on QWK: baseline 0.8246, unet 0.8130,
+unetpp 0.8144 — baseline won, consistent with the Segmentation section's patchy-mask caveat
+(those two still use the original CGMH-trained, full-leg-scale U-Net/U-Net++ checkpoints,
+which is why `kl_final` doesn't use a mask channel at all). These checkpoints and results
+are kept on disk (`kl_{baseline,unet,unetpp}_best.pt` and their `_test_*` files) and still
+work via `predict.py --run baseline|unet|unetpp` — only the *default* run changed to `final`.
 
 ## Preprocessing for arbitrary input images — DONE (2026-10-18)
 `scripts/preprocess_xray.py` converts any knee X-ray (not just pre-cropped OAI-style
@@ -195,24 +206,27 @@ can be pointed at a raw/uncropped X-ray from anywhere.
   shallow `--depth 1` clone fixed the dataset clone.
 
 ## Commands
-python scripts/train_classifier.py --mask-source none|unet|unetpp
-python scripts/evaluate_classifier.py --mask-source none|unet|unetpp
-python scripts/predict.py path/to/xray.png --run baseline|unet|unetpp [--show] [--auto-crop]
+python scripts/train_classifier.py --backbone efficientnet_b0|resnet50|densenet121|convnext_tiny \
+    [--mask-source none|unet|unetpp] [--warmup-epochs N] [--clahe] [--attention none|cbam] \
+    [--loss ce|coral] [--class-weights inverse|sqrt|none] [--seed N] [--ckpt-name NAME]
+python scripts/evaluate_classifier.py [--ckpt-name NAME | --mask-source none|unet|unetpp] \
+    [--backbone ...] [--attention ...] [--loss ...] [--clahe] [--tta] [--split val|test]
+python scripts/predict.py path/to/xray.png --run final|baseline|unet|unetpp [--show] [--auto-crop]
 python scripts/preprocess_xray.py path/to/xray.png --out-dir outputs/preprocessed
+(all new flags default to the original behavior; `--run final` is predict.py's new default)
 
 ## Current status
-Done: dataset cleanup (`prepare_dataset.py`, CSVs verified); Python 3.12 venv with
-PyTorch+CUDA; CGMH dataset cloned; segmentation trained and evaluated in Colab
-(4 models); U-Net and U-Net++ selected; classifier scripts written; `requirements.txt`
-installed; all three classifier runs (baseline/unet/unetpp) trained and evaluated
-on the test set (see results table in the Classifier section) — baseline has the
-best QWK (0.8246); `preprocess_xray.py` built and verified (see Preprocessing
-section), wired into `predict.py --auto-crop`.
+Done: dataset cleanup; Python 3.12 venv with PyTorch+CUDA; CGMH segmentation (4 models,
+U-Net/U-Net++ selected); `preprocess_xray.py` for arbitrary-input auto-cropping; and the
+full classifier optimization pass described above — `kl_final` (convnext_tiny + CLAHE +
+CBAM + CORAL) is now the **locked, default model**, significantly beating the original
+EfficientNet-B0 baseline on the test set (QWK 0.8570 vs 0.8246, bootstrap-confirmed
+significant). Wired into `predict.py` as the default `--run final`.
 
-Next: decide which classifier to carry forward (baseline looks like the pick given
-the mask-quality caveat) and move on to Grad-CAM XAI on it, validated against the
-U-Net++ masks. Retraining segmentation on OAI-scale crops (to fix the patchy-mask
-issue) is an open option if the mask channel is revisited later, but not decided yet.
-Preprocessing follow-ups if it matters later: validate DICOM loading against a real
-file, and get a real bilateral X-ray to test the split logic (only synthetically
-tested so far).
+Next: Grad-CAM-style XAI on `kl_final` (note: CORAL's 4-threshold head means standard
+Grad-CAM needs adapting — e.g. run it per threshold output, or on the derived per-grade
+probability), validated against the U-Net++ masks. Then causal inference (still parked,
+needs one scoped question). Open follow-ups, not urgent: validate DICOM loading in
+`preprocess_xray.py` against a real file (still untested), get a real bilateral X-ray to
+test the split logic (only synthetically tested), and consider more epochs for CORAL
+specifically (its seed-42 ablation run was still improving at the epoch budget's edge).
