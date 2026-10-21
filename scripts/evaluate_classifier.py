@@ -17,7 +17,7 @@ from sklearn.metrics import (accuracy_score, cohen_kappa_score, classification_r
                              confusion_matrix, f1_score, mean_absolute_error)
 
 from kl_common import (list_split, get_transforms, KLDataset, build_classifier,
-                       load_seg_model, run_eval_probs, GRADES, BACKBONES)
+                       load_seg_model, run_eval_probs, GRADES, BACKBONES, build_hybrid1)
 
 
 def main():
@@ -26,6 +26,7 @@ def main():
     ap.add_argument("--backbone", choices=BACKBONES, default="efficientnet_b0")
     ap.add_argument("--attention", choices=["none", "cbam"], default="none")
     ap.add_argument("--loss", choices=["ce", "coral"], default="ce")
+    ap.add_argument("--head", choices=["mlp", "transformer"], default="mlp")
     ap.add_argument("--clahe", action="store_true", help="Must match how the checkpoint was trained")
     ap.add_argument("--tta", action="store_true", help="Average predictions of the image and its horizontal flip")
     ap.add_argument("--split", choices=["val", "test"], default="test")
@@ -53,8 +54,11 @@ def main():
     seg_model = load_seg_model(mask_source, args.ckpt_dir, device) if mask_source else None
     out_dim = 4 if args.loss == "coral" else 5
     attention = args.attention if args.attention != "none" else None
-    model = build_classifier(args.backbone, 4 if mask_source else 3, pretrained=False,
-                             out_dim=out_dim, attention=attention).to(device)
+    if args.head == "transformer":
+        model = build_hybrid1(args.ckpt_dir, device, init_from=None)   # architecture only, weights loaded below
+    else:
+        model = build_classifier(args.backbone, 4 if mask_source else 3, pretrained=False,
+                                 out_dim=out_dim, attention=attention).to(device)
     model.load_state_dict(torch.load(os.path.join(args.ckpt_dir, f"{name}_best.pt"), map_location=device))
 
     eval_name = name + ("_tta" if args.tta else "")

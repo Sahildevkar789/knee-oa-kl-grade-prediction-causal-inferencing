@@ -17,7 +17,8 @@ from sklearn.metrics import cohen_kappa_score, f1_score
 
 from kl_common import (list_split, get_transforms, KLDataset, build_classifier,
                        load_seg_model, add_mask_channel, run_eval, run_name, BACKBONES,
-                       compute_class_weights, coral_pos_weights, coral_loss)
+                       compute_class_weights, coral_pos_weights, coral_loss,
+                       build_hybrid1)
 
 
 def main():
@@ -41,6 +42,12 @@ def main():
     ap.add_argument("--loss", choices=["ce", "coral"], default="ce",
                     help="coral: CORAL ordinal head (4 binary 'grade>k' outputs) instead of plain 5-way softmax")
     ap.add_argument("--class-weights", choices=["inverse", "sqrt", "none"], default="inverse")
+    ap.add_argument("--head", choices=["mlp", "transformer"], default="mlp",
+                    help="transformer: Hybrid 1 - kl_final's ConvNeXt-Tiny+CBAM feature map -> "
+                         "2-layer Transformer encoder (CLS token) -> CORAL head. Forces "
+                         "backbone=convnext_tiny, attention=cbam, loss=coral.")
+    ap.add_argument("--init-from", default="kl_final_best.pt",
+                    help="--head transformer only: checkpoint to initialize features/CBAM weights from")
     ap.add_argument("--ckpt-name", default=None,
                     help="Override the auto-generated run name (used by the ablation orchestration "
                          "to compose option suffixes consistently)")
@@ -54,8 +61,20 @@ def main():
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     use_amp = torch.cuda.is_available()
     mask_source = None if args.mask_source == "none" else args.mask_source
+    if args.head == "transformer":
+        # Hybrid 1 is a fixed architecture (kl_final's ConvNeXt-Tiny+CBAM feature map +
+        # transformer + CORAL) - force the matching base options rather than silently
+        # training something inconsistent with what was requested.
+        if args.backbone != "convnext_tiny" or args.attention != "cbam" or args.loss != "coral":
+            print("NOTE: --head transformer forces backbone=convnext_tiny, attention=cbam, "
+                 f"loss=coral (ignoring --backbone {args.backbone} --attention {args.attention} "
+                 f"--loss {args.loss})")
+        args.backbone, args.attention, args.loss = "convnext_tiny", "cbam", "coral"
+
     if args.ckpt_name:
         name = args.ckpt_name
+    elif args.head == "transformer":
+        name = "kl_hybrid1" if args.seed == 42 else f"kl_hybrid1_seed{args.seed}"
     else:
         name = run_name(mask_source, args.backbone)
         if args.seed != 42:
@@ -95,7 +114,10 @@ def main():
     seg_model = load_seg_model(mask_source, args.ckpt_dir, device) if mask_source else None
     out_dim = 4 if args.loss == "coral" else 5
     attention = args.attention if args.attention != "none" else None
-    model = build_classifier(args.backbone, 4 if mask_source else 3, out_dim=out_dim, attention=attention).to(device)
+    if args.head == "transformer":
+        model = build_hybrid1(args.ckpt_dir, device, init_from=args.init_from)
+    else:
+        model = build_classifier(args.backbone, 4 if mask_source else 3, out_dim=out_dim, attention=attention).to(device)
     n_params = sum(p.numel() for p in model.parameters())
     if args.loss == "coral":
         pos_w = coral_pos_weights(train_y, device, mode=args.class_weights)
@@ -168,7 +190,7 @@ def main():
         "BestEpoch": best_epoch, "BatchSize": args.batch_size,
         "Seed": args.seed, "WarmupEpochs": args.warmup_epochs,
         "CLAHE": args.clahe, "Attention": args.attention, "Loss": args.loss,
-        "ClassWeights": args.class_weights,
+        "ClassWeights": args.class_weights, "Head": args.head,
     }]).round(4)
     if os.path.exists(summary_path):
         old = pd.read_csv(summary_path)

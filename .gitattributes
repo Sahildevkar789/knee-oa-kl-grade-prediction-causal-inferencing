@@ -4,3 +4,4 @@ outputs/checkpoints/unetpp_best.pt filter=lfs diff=lfs merge=lfs -text
 # dominated by embedded cell outputs, not actual code)
 notebooks/*.ipynb linguist-vendored
 outputs/checkpoints/kl_final_best.pt filter=lfs diff=lfs merge=lfs -text
+outputs/checkpoints/kl_hybrid1_best.pt filter=lfs diff=lfs merge=lfs -text

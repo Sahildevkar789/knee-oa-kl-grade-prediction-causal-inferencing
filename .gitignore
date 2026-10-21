@@ -27,3 +27,8 @@ outputs/checkpoints/kl_baseline_efficientnet_b0_seed*
 # files and the overnight_log.md narrative
 outputs/results/_train_*.txt
 outputs/results/_abl_*.txt
+outputs/results/_hybrid1_*.txt
+
+# Redundant duplicate of kl_hybrid1_best.pt (seed7) - the seed42 original was overwritten
+# when seed7 was picked as the better one; see final_build_log.md Phase 1 process note
+outputs/checkpoints/kl_hybrid1_seed7_best.pt

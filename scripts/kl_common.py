@@ -128,6 +128,61 @@ class ConvNeXtCBAM(nn.Module):
         return self.classifier(x)
 
 
+class ConvNeXtCBAMTransformer(nn.Module):
+    """Hybrid 1: ConvNeXt-Tiny+CBAM's final feature map (768x7x7) -> projected to 256-dim
+    tokens -> CLS token + learnable positional embeddings -> 2-layer Transformer encoder
+    (4 heads, dropout 0.1) -> CLS output -> CORAL head (4 thresholds)."""
+    def __init__(self, base_convnext, cbam_channels, proj_dim=256, n_tokens=49,
+                n_layers=2, n_heads=4, dropout=0.1):
+        super().__init__()
+        self.features = base_convnext.features
+        self.cbam = CBAM(cbam_channels)
+        self.proj = nn.Conv2d(cbam_channels, proj_dim, kernel_size=1)
+        self.cls_token = nn.Parameter(torch.zeros(1, 1, proj_dim))
+        self.pos_embed = nn.Parameter(torch.zeros(1, n_tokens + 1, proj_dim))
+        nn.init.trunc_normal_(self.cls_token, std=0.02)
+        nn.init.trunc_normal_(self.pos_embed, std=0.02)
+        encoder_layer = nn.TransformerEncoderLayer(d_model=proj_dim, nhead=n_heads,
+                                                    dim_feedforward=proj_dim * 4,
+                                                    dropout=dropout, batch_first=True)
+        self.transformer = nn.TransformerEncoder(encoder_layer, num_layers=n_layers)
+        self.head = nn.Linear(proj_dim, 4)
+        self.last_attn = None   # CBAM spatial attention, kept for visualization parity with ConvNeXtCBAM
+
+    def forward(self, x):
+        x = self.features(x)
+        x, attn = self.cbam(x)
+        self.last_attn = attn.detach()
+        x = self.proj(x)
+        b = x.shape[0]
+        tokens = x.flatten(2).transpose(1, 2)               # (B, 49, 256)
+        tokens = torch.cat([self.cls_token.expand(b, -1, -1), tokens], dim=1)   # (B, 50, 256)
+        tokens = tokens + self.pos_embed
+        out = self.transformer(tokens)
+        return self.head(out[:, 0])
+
+
+def build_hybrid1(ckpt_dir, device, init_from="kl_final_best.pt"):
+    """Builds Hybrid 1, initializing its features/CBAM weights from a trained ConvNeXtCBAM
+    checkpoint (e.g. kl_final) by copying any state_dict keys with matching names+shapes -
+    the new projection/CLS/positional/transformer/head layers have no match and stay at their
+    default random init."""
+    base = convnext_tiny(weights=None)
+    in_f = base.classifier[2].in_features
+    model = ConvNeXtCBAMTransformer(base, cbam_channels=in_f)
+    if init_from:
+        src_state = torch.load(os.path.join(ckpt_dir, init_from), map_location=device)
+        model_state = model.state_dict()
+        n_loaded = 0
+        for k, v in src_state.items():
+            if k in model_state and model_state[k].shape == v.shape:
+                model_state[k] = v
+                n_loaded += 1
+        model.load_state_dict(model_state)
+        print(f"Hybrid1: initialized {n_loaded} tensors from {init_from} (features.*/cbam.*)")
+    return model.to(device)
+
+
 def build_classifier(backbone, in_ch, pretrained=True, out_dim=5, attention=None):
     """ImageNet-pretrained backbone with a classification head. in_ch=4 adds a channel for the
     bone mask. out_dim=4 switches to a CORAL ordinal head (see coral_loss/coral_decode).
