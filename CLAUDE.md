@@ -2,7 +2,11 @@
 
 BE major project: predict Kellgren-Lawrence (KL) grade (0-4) for knee osteoarthritis
 severity from X-rays, with explainability (XAI) and causal inference layered on top.
-Causal inference is PARKED for later. Current focus: the KL-grade classifier.
+**All phases done as of 2026-10-21**: classifier locked (`kl_final`), two hybrid
+architectures tried and not adopted, JSW measurement (not validated), XAI (Grad-CAM/SHAP),
+and one scoped causal question answered (obesity → KL grade). Full write-up:
+`outputs/results/final_results.md`. A web app is deferred to a later stage; the current
+interface is `predict.py`'s terminal demo (Grad-CAM + JSW panels, see Commands below).
 
 ## Hardware
 - Local Windows laptop, RTX 3050 (6GB VRAM). Keep training memory-optimized:
@@ -21,17 +25,30 @@ Causal inference is PARKED for later. Current focus: the KL-grade classifier.
   or convert it; segmentation is finished.
 - `outputs/checkpoints/` — `unet_best.pt`, `unetpp_best.pt` (trained in Colab,
   copied from Google Drive); `kl_final_best.pt` + `kl_final_config.json` (the locked
-  classifier, see below); other `kl_*_best.pt` from the backbone/ablation search.
+  classifier, see below); `kl_hybrid1_best.pt`/`kl_hybrid2_best.pt` + their config
+  JSONs (tried, not adopted - see Classifier section); other `kl_*_best.pt` from the
+  backbone/ablation search.
 - `outputs/results/` — training logs, test reports, confusion matrices,
   `kl_comparison.csv`, `backbone_comparison.csv`, `ablation.csv`, `final_test_report.csv`,
-  `significance_final_vs_baseline.csv`, `classifier_summary.md`, `overnight_log.md`,
-  `cbam_maps/`. `outputs/predictions/` — single-image prediction figures.
+  `significance_*_vs_*.csv`, `classifier_summary.md`, `overnight_log.md` (classifier-lock
+  decision trail), `final_build_log.md` (Phases 1-7 decision trail), `final_results.md`
+  (the full write-up), `cbam_maps/`, `xai/` (Grad-CAM/SHAP outputs), `causal/` (DAG,
+  estimates, refutation results). `outputs/predictions/` — single-image prediction figures.
   `outputs/preprocessed/` — crops + debug images from `preprocess_xray.py`.
+- `data/jsw_features.csv` — per-image joint space width measurements (see JSW section).
 - `scripts/prepare_dataset.py` — builds the two CSVs in `data/`.
 - `scripts/kl_common.py` — shared dataset, transforms, models, eval helper.
 - `scripts/train_classifier.py`, `scripts/evaluate_classifier.py`, `scripts/predict.py`.
 - `scripts/preprocess_xray.py` — auto-crops an arbitrary X-ray to a 224x224 joint
   crop (see "Preprocessing" section below).
+- `scripts/train_hybrid2.py` / `scripts/evaluate_hybrid2.py` — Hybrid 2 (image+tabular
+  fusion) training/eval, kept separate from train_classifier.py since its two-input
+  (image, tabular) forward pass doesn't fit the shared single-image loop.
+- `scripts/measure_jsw.py` — intensity-based joint space width measurement.
+- `scripts/run_xai.py`, `scripts/run_shap_hybrid2.py`, `scripts/run_causal.py` — one-off
+  analysis scripts for Phases 4/5, kept under `scripts/` for the record (not reusable CLIs).
+- `scripts/bootstrap_compare.py` — paired bootstrap significance test between any two
+  `*_test_predictions.csv` files; reusable.
 
 ## Datasets — decisions already made, don't redo this analysis
 Source: OAI (Osteoarthritis Initiative), originally a Kaggle-derived export.
@@ -54,13 +71,19 @@ Source: OAI (Osteoarthritis Initiative), originally a Kaggle-derived export.
   (`dataset/test/4/9215922R.png`) is missing from disk — pre-existing gap in the
   source data; harmless (1 of 8,260). The classifier scripts read folders directly,
   so the test set they use has 1,655 images.
-- `clinical_features.csv` — filtered clinical columns for the causal phase (parked).
-  Currently holds age (`V00AGE`), BMI (`P01BMI`), WOMAC pain/function R/L,
-  family history (`P01FAMHR`/`P01FAMKR`), lateral JSN R/L, osteophyte R/L.
-  **Correction:** the original selection was 14 clinical columns, including BOTH
-  lateral and medial JSN (`P01SVRKJSL`, `P01SVRKJSM`, `P01SVLKJSL`, `P01SVLKJSM`);
-  the "12 columns" figure in the old notes was wrong. Add the two medial JSN columns
-  back when the causal phase resumes (medial JSN is clinically the more important one).
+- `clinical_features.csv` — filtered clinical columns, used by Hybrid 2 (age/BMI) and
+  the causal analysis (age/BMI/family history). Holds age (`V00AGE`), BMI (`P01BMI`),
+  WOMAC pain/function R/L, family history (`P01FAMHR`/`P01FAMKR`), lateral JSN R/L,
+  osteophyte R/L. **Correction:** the original selection was 14 clinical columns,
+  including BOTH lateral and medial JSN (`P01SVRKJSL`, `P01SVRKJSM`, `P01SVLKJSL`,
+  `P01SVLKJSM`); the "12 columns" figure in the old notes was wrong.
+  **No sex/gender column exists anywhere in `unified_oai_dataset.csv`** (checked
+  exhaustively across all 1,193 columns) - this affected Hybrid 2's feature set and the
+  causal adjustment set; both proceed with age/BMI (+family history for causal) only,
+  logged rather than worked around. WOMAC/JSN/osteophyte columns are present but **must
+  never be used as model inputs or causal adjustment covariates** (hard rule - they're
+  consequences of OA, not causes/predictors to condition on); they're only used to
+  *validate* JSW in Phase 2.
 
 ## Segmentation — DONE (trained in Colab)
 - Ground truth: **CGMH Knee Segmentation Database**
@@ -123,6 +146,26 @@ gain (+0.0653, 95% CI [0.040, 0.092]) are statistically significant.
 KL1 ("doubtful OA") is still the weakest class for both models — a known, clinically
 subjective boundary even between radiologists, not something either architecture resolved.
 
+### Hybrid architectures tried — NOT adopted (2026-10-21/22)
+Two more architectures were built on top of `kl_final` and compared the same way (val QWK,
+2 seeds, test set touched once at the end). Full write-up: `outputs/results/final_results.md`
+section 5; decision trail: `outputs/results/final_build_log.md` Phases 1 and 3.
+
+- **Hybrid 1** (`kl_hybrid1_best.pt`): `kl_final`'s ConvNeXt-Tiny+CBAM feature map → 2-layer
+  Transformer encoder (CLS token, learnable positional embeddings, 4 heads) → CORAL head.
+  Mean val QWK 0.8320 (both seeds peaked at epoch 1 then degraded - a repeatable instability
+  pattern, not seed noise). Test QWK 0.8620 (numerically above kl_final's 0.8570) but the
+  bootstrap difference is NOT significant (95% CI [-0.002, 0.013]).
+- **Hybrid 2** (`kl_hybrid2_best.pt`): `kl_final`'s pooled image features + a small MLP over
+  age/BMI (sex requested but unavailable, see above) → CORAL head. Mean val QWK 0.8170 (same
+  early-peak-then-degrade pattern). Test QWK 0.8598, also not significantly different from
+  kl_final (95% CI [-0.007, 0.013]).
+
+Both lost on validation QWK, the pre-registered selection criterion - the higher test numbers
+don't change that, since test is for confirmation, not selection. **`kl_final` stays the
+locked model.** `scripts/train_hybrid2.py`/`evaluate_hybrid2.py` exist if Hybrid 2 is revisited
+(e.g. with a lower LR or a frozen-backbone warmup to address the early-epoch instability).
+
 ### Superseded: original 3-run comparison (2026-09-25)
 Before the work above, `kl_baseline`/`kl_unet`/`kl_unetpp` (all EfficientNet-B0, image vs
 image+U-Net-mask vs image+U-Net++-mask) were compared on QWK: baseline 0.8246, unet 0.8130,
@@ -181,16 +224,50 @@ can be pointed at a raw/uncropped X-ray from anywhere.
   images produce multiple results), and shows the *cropped* image in the result
   window/figure, not the original.
 
-## XAI (after the classifier)
-- Grad-CAM on the best classifier; check attention overlaps the joint region using
-  the U-Net++ masks.
+## Joint Space Width (JSW) — measured, NOT validated (2026-10-21)
+`scripts/measure_jsw.py`: intensity-based JSW on CLAHE-enhanced images - per-column
+femur/tibia edge detection with a local joint-line refinement (anchoring every column to one
+global row made most columns spuriously read zero - the joint line isn't perfectly
+horizontal), medial/lateral split skipping the central ~20% (tibial spines) plus a matching
+outer-edge margin (condyle curvature). Ran on all 8,259 images → `data/jsw_features.csv`.
 
-## Causal inference — PARKED, do not build yet
-- Use `clinical_features.csv` (age, BMI, WOMAC, family history) plus imaging
-  features. OAI already includes radiologist-graded JSN/osteophyte scores, usable
-  directly or to validate mask-derived measurements.
-- Needs ONE scoped causal question (e.g. "does BMI causally affect KL grade,
-  independent of age and family history"). Tools: DoWhy or CausalNex.
+Validated against radiologist JSN grades (match on patient ID + knee side,
+`unified_oai_dataset.csv`'s `P01SV{R,L}KJS{L,M}` columns): medial_min_jsw vs matching JSN
+rho=-0.179 - correct direction, clean monotonic box-plot trend, but below the -0.3 validation
+threshold. **Consequence**: JSW excluded from Hybrid 2's features and from the causal
+mediation analysis (both per the pre-registered fallback rules). Details:
+`outputs/results/final_results.md` section 6, decision trail in `final_build_log.md` Phase 2.
+
+## XAI — DONE (2026-10-21/22)
+Grad-CAM (last ConvNeXt stage, target = sum of CORAL's 4 threshold logits - no single
+softmax class score to backprop from) on `kl_final` and Hybrid 1, 15 test images (3/grade,
+5 wrong predictions). Quantitative check: fraction of Grad-CAM mass inside a joint-line band
+(±15% of image height, using the JSW joint-row detector) - KL4 images show much lower in-band
+mass (0.24 vs 0.49-0.60 for KL0-3), traced to the model correctly attending to bilateral
+femoral osteophytes sitting just above the band for severe cases, not a failure. CBAM
+attention maps saved alongside. SHAP on Hybrid 2's tabular features (per-instance multi-modal
+setup, 60 test instances): age matters somewhat more than BMI, both push toward higher
+predicted grades. All in `outputs/results/xai/`; write-up in `final_results.md` section 7.
+`grad_cam()` lives in `kl_common.py`, shared between `run_xai.py` and `predict.py`.
+
+## Causal inference — DONE, one scoped question answered (2026-10-22)
+**Question**: does obesity (BMI≥30) causally affect KL grade, adjusting for age and family
+history of knee replacement (`P01FAMKR`)? Sex omitted (unavailable, see above). WOMAC/JSN/
+osteophyte never used as adjustment covariates (hard rule - they're OA consequences, not
+causes). `scripts/run_causal.py` (DoWhy): DAG saved to `outputs/results/causal/dag.png`.
+
+Primary analysis (one knee per patient, random seed 42, n=4,071): obesity associated with
+**+0.48 to +0.58 higher KL grade points** (propensity score matching and linear regression
+agree), **+19-25 percentage points** higher probability of KL≥2. All three refuters pass
+(placebo collapses to ~0, random common cause and data subset don't move the estimate).
+Sensitivity analysis (both knees instead of one) found a genuine methodological issue, not
+just confirmed robustness: propensity score matching collapses toward zero because both knees
+of the same patient share identical covariates, causing degenerate same-patient matches -
+concrete evidence for why the primary analysis needs the one-knee restriction. Linear
+regression stays stable either way. Mediation analysis (BMI → JSW → KL grade) skipped - JSW
+not validated. **Stated under this DAG's assumptions only**; unmeasured confounders (physical
+activity, prior injury, occupation, genetics beyond family history) are a real limitation.
+Full write-up: `final_results.md` section 8; decision trail: `final_build_log.md` Phase 5.
 
 ## Environment setup
 - venv at `venv/` uses **Python 3.12**, not the system default 3.14 — PyTorch CUDA
@@ -198,8 +275,9 @@ can be pointed at a raw/uncropped X-ray from anywhere.
 - Installed: `torch==2.14.0+cu126` (CUDA confirmed on the RTX 3050), numpy, pandas,
   pillow, scikit-learn, matplotlib. **Do not reinstall torch.**
 - `requirements.txt` installed (segmentation-models-pytorch, albumentations,
-  opencv-python, scipy, plus pandas/scikit-learn/matplotlib already present) —
-  confirmed torch stayed the CUDA build afterwards.
+  opencv-python, scipy, pydicom, shap, dowhy, plus pandas/scikit-learn/matplotlib
+  already present) — confirmed torch stayed the CUDA build each time something new
+  was added (shap and dowhy both have their own dependency trees; neither touched torch).
 - Git installed via `winget install --id Git.Git`.
 - Network is flaky: large downloads can stall at 0 B/s. If there's no byte progress
   for a while, kill and retry. `git config http.postBuffer 524288000` plus a
@@ -213,6 +291,10 @@ python scripts/evaluate_classifier.py [--ckpt-name NAME | --mask-source none|une
     [--backbone ...] [--attention ...] [--loss ...] [--clahe] [--tta] [--split val|test]
 python scripts/predict.py path/to/xray.png --run final|baseline|unet|unetpp [--show] [--auto-crop]
 python scripts/preprocess_xray.py path/to/xray.png --out-dir outputs/preprocessed
+python scripts/measure_jsw.py --out data/jsw_features.csv
+python scripts/train_hybrid2.py --seed 42|7
+python scripts/evaluate_hybrid2.py --ckpt-name kl_hybrid2 --split val|test
+python scripts/bootstrap_compare.py <preds_a.csv> <preds_b.csv> <label_a> <label_b> <out.csv>
 (all new flags default to the original behavior; `--run final` is predict.py's new default)
 
 ### Terminal demo (Phase 6) - predict.py now shows Grad-CAM + JSW, not just the probability bar
@@ -232,17 +314,20 @@ and the probability bar chart. The terminal also prints a one-line causal-findin
 **A web app is deferred to a later stage** - this terminal demo is the interface for now.
 
 ## Current status
-Done: dataset cleanup; Python 3.12 venv with PyTorch+CUDA; CGMH segmentation (4 models,
-U-Net/U-Net++ selected); `preprocess_xray.py` for arbitrary-input auto-cropping; and the
-full classifier optimization pass described above — `kl_final` (convnext_tiny + CLAHE +
-CBAM + CORAL) is now the **locked, default model**, significantly beating the original
-EfficientNet-B0 baseline on the test set (QWK 0.8570 vs 0.8246, bootstrap-confirmed
-significant). Wired into `predict.py` as the default `--run final`.
+**All planned phases are done.** Dataset cleanup; Python 3.12 venv with PyTorch+CUDA; CGMH
+segmentation (4 models, U-Net/U-Net++ selected); `preprocess_xray.py` for arbitrary-input
+auto-cropping; classifier backbone search → ablation → `kl_final` locked (convnext_tiny +
+CLAHE + CBAM + CORAL, test QWK 0.8570 vs baseline's 0.8246, bootstrap-significant); two hybrid
+architectures tried and not adopted (Transformer head, image+tabular fusion - neither beat
+`kl_final` on validation); JSW measured but not validated (rho=-0.179 vs -0.3 threshold);
+XAI done (Grad-CAM, quantitative joint-region check, CBAM maps, SHAP); one scoped causal
+question answered (obesity → KL grade, +0.48 to +0.58 points under the DAG's assumptions,
+refutation-robust); `predict.py` extended into a terminal demo (Grad-CAM + JSW panels,
+default `--run final`). Full write-up: `outputs/results/final_results.md`.
 
-Next: Grad-CAM-style XAI on `kl_final` (note: CORAL's 4-threshold head means standard
-Grad-CAM needs adapting — e.g. run it per threshold output, or on the derived per-grade
-probability), validated against the U-Net++ masks. Then causal inference (still parked,
-needs one scoped question). Open follow-ups, not urgent: validate DICOM loading in
-`preprocess_xray.py` against a real file (still untested), get a real bilateral X-ray to
-test the split logic (only synthetically tested), and consider more epochs for CORAL
-specifically (its seed-42 ablation run was still improving at the epoch budget's edge).
+Open follow-ups, none urgent, none blocking: validate DICOM loading in `preprocess_xray.py`
+against a real file (still untested); get a real bilateral X-ray to test the split logic
+(only synthetically tested); consider more epochs or a lower/frozen-backbone LR for the
+hybrid architectures specifically (both showed the same early-epoch-peak-then-degrade
+instability, worth a second look if hybrids are revisited); a web app, deferred by design
+(Phase 6 was explicitly terminal-only "for now").
