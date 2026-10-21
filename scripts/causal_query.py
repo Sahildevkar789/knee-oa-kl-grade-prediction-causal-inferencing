@@ -6,6 +6,10 @@ follow-up. Every underlying effect is fit once (cached, see causal_model.py) via
 and DAG spirit as Phase 5 (one knee per patient, seed 42; never adjusting for WOMAC/JSN/
 osteophyte grades - they're consequences of OA, not causes).
 
+An age or BMI outside what OAI actually enrolled (45-79 / 16.9-48.7) is refused, not computed -
+the model is a straight line fit to that range, and extrapolating it (e.g. to a child) can give
+a nonsensical expected KL grade (below 0 or above 4).
+
 Interactive:
     python scripts/causal_query.py
 Non-interactive (skips the matching prompt):
@@ -13,8 +17,9 @@ Non-interactive (skips the matching prompt):
 """
 import argparse
 
-from causal_model import (load_or_fit_causal_models, age_group_label, expected_kl, warn_if_out_of_range,
-                          contribution_age, contribution_bmi, contribution_famkr, CAUSAL_CAVEAT)
+from causal_model import (load_or_fit_causal_models, age_group_label, out_of_range_messages,
+                          fmt_expected_kl, contribution_age, contribution_bmi, contribution_famkr,
+                          fmt_contribution, CAUSAL_CAVEAT)
 
 
 def prompt_optional(prompt_text, parse=float):
@@ -54,14 +59,22 @@ def get_profile(args):
     return age, bmi, famkr
 
 
-def fmt_ci(block, unit=""):
-    sign = "+" if block["value"] >= 0 else ""
-    return f"{sign}{block['value']:.2f}{unit} (95% CI {block['ci_low']:.2f} to {block['ci_high']:.2f})"
+def fmt_age_line(age, age_c):
+    if age_c["total"]["is_reference"]:
+        return f"Age ({age:.0f} vs 50): same as reference (no contribution)"
+    return (f"Age ({age:.0f} vs 50): total {fmt_contribution(age_c['total'])} "
+           f"= direct {fmt_contribution(age_c['direct'])} + via BMI {fmt_contribution(age_c['indirect'])}")
 
 
-def print_profile_report(models, age, bmi, famkr, famkr_was_skipped):
-    for w in warn_if_out_of_range(models, age, bmi):
-        print(f"  WARNING: {w}")
+def print_profile_report(models, age, bmi, famkr):
+    """Prints the full per-factor report, or - if age/BMI falls outside the OAI study
+    population - a refusal message instead. Returns (age, bmi, famkr_used) on success, None on
+    refusal (nothing was computed)."""
+    refusal = out_of_range_messages(models, age, bmi)
+    if refusal:
+        for m in refusal:
+            print(f"  {m}")
+        return None
 
     ref = models["reference"]
     famkr_used = famkr if famkr is not None else models["most_common_famkr"]
@@ -69,22 +82,20 @@ def print_profile_report(models, age, bmi, famkr, famkr_was_skipped):
         print(f"  Family history skipped - using the population's most common value "
              f"({'yes' if famkr_used else 'no'}).")
 
-    kl_profile = expected_kl(models, age, bmi, famkr_used)
-    kl_ref = expected_kl(models, ref["age"], ref["bmi"], ref["famkr"])
     obese = bmi >= 30
     print(f"\nProfile: age {age:.0f}, BMI {bmi:.1f} ({'obese' if obese else 'not obese'}, "
          f"threshold 30), family history {'yes' if famkr_used else 'no'}")
-    print(f"Expected KL grade for this profile: {kl_profile:.2f} "
-         f"(reference profile age 50/BMI 25/no family history: {kl_ref:.2f})")
+    print(f"Expected KL grade for this profile: {fmt_expected_kl(models, age, bmi, famkr_used)} "
+         f"(reference profile age 50/BMI 25/no family history: "
+         f"{fmt_expected_kl(models, ref['age'], ref['bmi'], ref['famkr'])})")
 
     print("\nPer-factor contribution to expected KL grade, relative to the reference profile:")
     age_c = contribution_age(models, age)
-    print(f"  Age ({age:.0f} vs 50): total {fmt_ci(age_c['total'])} "
-         f"= direct {fmt_ci(age_c['direct'])} + via BMI {fmt_ci(age_c['indirect'])}")
+    print(f"  {fmt_age_line(age, age_c)}")
     bmi_c = contribution_bmi(models, bmi)
-    print(f"  BMI ({bmi:.1f} vs 25): {fmt_ci(bmi_c)}")
+    print(f"  BMI ({bmi:.1f} vs 25): {fmt_contribution(bmi_c)}")
     famkr_c = contribution_famkr(models, famkr_used)
-    print(f"  Family history ({'yes' if famkr_used else 'no'} vs no): {fmt_ci(famkr_c)}")
+    print(f"  Family history ({'yes' if famkr_used else 'no'} vs no): {fmt_contribution(famkr_c)}")
 
     band = age_group_label(age)
     ob = models["obesity_by_age_group"][band]
@@ -92,20 +103,24 @@ def print_profile_report(models, age, bmi, famkr, famkr_was_skipped):
          f"+{ob['coef']:.2f} KL grade points (95% CI {ob['ci_low']:.2f} to {ob['ci_high']:.2f})")
 
     print(f"\nCaveat: {CAUSAL_CAVEAT}")
-    return kl_profile, age, bmi, famkr_used
+    return age, bmi, famkr_used
 
 
 def whatif_loop(models, age, famkr_used):
-    """'Change BMI to?' follow-up - loops until a blank answer, then returns to the outer loop."""
+    """'Change BMI to?' follow-up - loops until a blank answer, then returns to the outer loop.
+    A new BMI outside the OAI range is refused the same way as the main profile."""
     while True:
         new_bmi = prompt_optional("Change BMI to? (blank to stop)")
         if new_bmi is None:
             return
-        for w in warn_if_out_of_range(models, bmi=new_bmi):
-            print(f"  WARNING: {w}")
-        kl_new = expected_kl(models, age, new_bmi, famkr_used)
+        refusal = out_of_range_messages(models, bmi=new_bmi)
+        if refusal:
+            for m in refusal:
+                print(f"  {m}")
+            continue
         print(f"  At BMI {new_bmi:.1f} (age {age:.0f}, family history "
-             f"{'yes' if famkr_used else 'no'}): expected KL grade {kl_new:.2f}")
+             f"{'yes' if famkr_used else 'no'}): expected KL grade "
+             f"{fmt_expected_kl(models, age, new_bmi, famkr_used)}")
         print(f"  Caveat: {CAUSAL_CAVEAT}")
 
 
@@ -131,7 +146,13 @@ def main():
             print("Exiting.")
             return
         age, bmi, famkr = profile
-        _, age, bmi, famkr_used = print_profile_report(models, age, bmi, famkr, famkr is None)
+        result = print_profile_report(models, age, bmi, famkr)
+        if result is None:
+            print()
+            if non_interactive:
+                return
+            continue   # refused - ask for a fresh profile instead of starting the what-if loop
+        age, bmi, famkr_used = result
         whatif_loop(models, age, famkr_used)
         print()
         if non_interactive:

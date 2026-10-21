@@ -266,34 +266,50 @@ def load_or_fit_causal_models(force_refit=False):
     return _refit()
 
 
-def warn_if_out_of_range(models, age=None, bmi=None):
-    """List of warning strings for an age/bmi outside the range actually seen in the fitting
-    data - the model should not be trusted to extrapolate silently beyond this range."""
-    warnings = []
+def out_of_range_messages(models, age=None, bmi=None):
+    """Refusal messages for an age/BMI outside the range OAI actually enrolled (45-79 / 16.9-
+    48.7). This model is a straight line fit to that range; asking it about, say, age 11
+    (OAI enrolled no children at all) is extrapolation far enough to produce nonsense - an
+    out-of-[0,4] expected KL grade is the symptom, not the problem (see clip_kl_grade). So
+    these are refusals, not warnings: callers should refuse to compute rather than show a
+    number from a model with nothing to say about that range."""
     r = models["data_ranges"]
+    msgs = []
     if age is not None and not (r["age_min"] <= age <= r["age_max"]):
-        warnings.append(f"Age {age:.0f} is outside the data's observed range "
-                        f"({r['age_min']:.0f}-{r['age_max']:.0f}) - this is extrapolation, treat with caution.")
+        msgs.append(f"Age {age:.0f} is outside the OAI study population "
+                    f"({r['age_min']:.0f}-{r['age_max']:.0f}). The causal model can't make "
+                    "estimates for this profile.")
     if bmi is not None and not (r["bmi_min"] <= bmi <= r["bmi_max"]):
-        warnings.append(f"BMI {bmi:.1f} is outside the data's observed range "
-                        f"({r['bmi_min']:.1f}-{r['bmi_max']:.1f}) - this is extrapolation, treat with caution.")
-    return warnings
+        msgs.append(f"BMI {bmi:.1f} is outside the OAI study population "
+                    f"({r['bmi_min']:.1f}-{r['bmi_max']:.1f}). The causal model can't make "
+                    "estimates for this profile.")
+    return msgs
 
 
 def expected_kl(models, age, bmi, famkr):
-    """Expected KL grade (0-4, unclipped linear prediction) for a given profile, from the
-    combined model (y ~ Age + BMI + FamilyHistoryKneeReplacement)."""
+    """Expected KL grade for a given profile, from the combined model
+    (y ~ Age + BMI + FamilyHistoryKneeReplacement), clipped to the valid 0-4 range (the raw
+    linear prediction can fall outside it for a profile near the edge of the fitted range -
+    callers should check out_of_range_messages first; this clip is a display safety net, not
+    a substitute for refusing genuinely out-of-range inputs). Returns (clipped_value, was_clipped).
+    """
     m = models["combined_model"]
-    return m["intercept"] + m["age_coef"] * age + m["bmi_coef"] * bmi + m["famkr_coef"] * famkr
+    raw = m["intercept"] + m["age_coef"] * age + m["bmi_coef"] * bmi + m["famkr_coef"] * famkr
+    clipped = max(0.0, min(4.0, raw))
+    return clipped, abs(clipped - raw) > 1e-9, raw
 
 
 def _scale_ci(block, delta):
     """Scales a {coef,ci_low,ci_high} block (stated per unit of its variable) by delta - valid
     because every effect here is a linear-model coefficient, so CIs scale linearly too. A
     negative delta flips which scaled bound is numerically smaller, so re-sort rather than
-    assume scaled ci_low stays <= scaled ci_high."""
+    assume scaled ci_low stays <= scaled ci_high. is_reference marks delta==0 (patient's value
+    equals the reference) so callers can print "same as reference" instead of a value that can
+    render as the cosmetically odd "+-0.00" (IEEE754 negative zero from a negative coefficient
+    times a zero delta, combined with a naive "value >= 0 -> '+'" sign check)."""
     lo, hi = block["ci_low"] * delta, block["ci_high"] * delta
-    return {"value": block["coef"] * delta, "ci_low": min(lo, hi), "ci_high": max(lo, hi)}
+    return {"value": block["coef"] * delta, "ci_low": min(lo, hi), "ci_high": max(lo, hi),
+           "is_reference": delta == 0}
 
 
 def contribution_age(models, age):
@@ -315,6 +331,25 @@ def contribution_bmi(models, bmi):
 def contribution_famkr(models, famkr):
     delta = famkr - models["reference"]["famkr"]
     return _scale_ci(models["family_history_effect"], delta)
+
+
+def fmt_expected_kl(models, age, bmi, famkr):
+    """Display string for expected_kl's result, noting when the raw linear prediction had to
+    be clipped into the valid 0-4 KL grade range."""
+    clipped, was_clipped, raw = expected_kl(models, age, bmi, famkr)
+    if was_clipped:
+        return f"{clipped:.2f} (clipped from raw model estimate {raw:.2f}; KL grades run 0-4)"
+    return f"{clipped:.2f}"
+
+
+def fmt_contribution(block):
+    """Display string for a contribution_*() block - used identically by causal_query.py and
+    predict.py's causal panel, so the "same as reference" / CI formatting can't drift between
+    the two."""
+    if block.get("is_reference"):
+        return "same as reference (no contribution)"
+    sign = "+" if block["value"] >= 0 else ""
+    return f"{sign}{block['value']:.2f} (95% CI {block['ci_low']:.2f} to {block['ci_high']:.2f})"
 
 
 if __name__ == "__main__":

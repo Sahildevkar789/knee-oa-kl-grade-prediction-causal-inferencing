@@ -386,23 +386,24 @@ For each profile it prints: the expected KL grade (vs. the reference profile age
 family history); each factor's contribution with a 95% CI (age split into total/direct/
 indirect-via-BMI); the obesity effect for that patient's age group (<55/55-65/65+); then asks
 "Change BMI to?" to see how the expected KL grade changes (blank to stop, loops). Blank age or
-BMI at the main prompt quits. Warns (doesn't silently extrapolate) if the entered age or BMI
-falls outside the data's observed range (age 45-79, BMI 16.9-48.7). Every output repeats the
-caveat that these are population-level estimates under the DAG's assumptions, not individual
-predictions.
-- Always shown: Phase 5's population finding (obesity -> +0.48 to +0.58 KL grade points, linear
-  regression / propensity score matching) and the caveat ("Population-level estimate from OAI
-  data under the causal model's assumptions; not a diagnosis or individual prediction.").
-- If age **and** BMI are both given: states whether BMI>=30 (obese), and shows the expected KL
-  grade at this patient's age/family history with vs. without obesity, from the fitted
-  regression-adjustment model (`scripts/causal_model.py`, same spec and same one-knee-per-patient
-  seed-42 sample as `run_causal.py`'s `backdoor.linear_regression` estimate - its obesity
-  coefficient reproduces Phase 5's +0.485 ATE). Coefficients are cached at
-  `outputs/results/causal/kl_regression_coefs.json` on first use (refit from
-  `data/clinical_features.csv` if that file is missing) and reused after that.
-- If family history is skipped but age/BMI are given: uses the population's most common value
-  (no, in this dataset) for the patient-specific estimate and says so.
-- If age or BMI is skipped: shows only the population finding, no patient-specific estimate.
+BMI at the main prompt quits. Every output repeats the caveat that these are population-level
+estimates under the DAG's assumptions, not individual predictions.
+
+**Out-of-range age/BMI is refused, not computed** (added 2026-10-23, same in `predict.py`'s
+causal panel - they share `causal_model.out_of_range_messages()`): OAI only enrolled ages
+45-79 and BMI 16.9-48.7, so this is a straight line fit to that range - extrapolating it (e.g.
+to a child) isn't a cautious estimate, it's nonsense (a real example caught in testing: age 11
+gave an expected KL grade of -0.62, below the valid 0-4 range). Querying age 11 or BMI 55
+prints e.g. "Age 11 is outside the OAI study population (45-79). The causal model can't make
+estimates for this profile." and asks again (or, non-interactively via `--age`/`--bmi`, just
+exits) instead of showing a number. As a second line of defense, `expected_kl()` also clips
+any displayed KL grade to 0-4 and says so if clipping changed the number (e.g. "0.00 (clipped
+from raw model estimate -0.62; KL grades run 0-4)") - this matters for the what-if's "Change
+BMI to?" step, which checks the new BMI against the same range before computing anything.
+When a factor's value equals the reference (e.g. age 50 vs. the reference age 50), its
+contribution line reads "same as reference (no contribution)" rather than a value that could
+render as "+0.00" or the cosmetically odd "+-0.00" (a negative-coefficient effect times a zero
+delta is IEEE754 negative zero).
 
 ## Current status
 **All planned phases are done.** Dataset cleanup; Python 3.12 venv with PyTorch+CUDA; CGMH

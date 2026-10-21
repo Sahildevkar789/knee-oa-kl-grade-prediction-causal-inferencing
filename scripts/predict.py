@@ -24,8 +24,8 @@ from kl_common import (build_classifier, build_hybrid2, load_seg_model, apply_cl
                        grad_cam, MEAN, STD, IMG_SIZE, SEG_SIZE, KL_TEXT)
 from preprocess_xray import prepare_xray
 from measure_jsw import measure_jsw_array, assign_compartments
-from causal_model import (load_or_fit_causal_models, age_group_label, expected_kl, warn_if_out_of_range,
-                          contribution_age, contribution_bmi, contribution_famkr, CAUSAL_CAVEAT)
+from causal_model import (load_or_fit_causal_models, age_group_label, fmt_expected_kl, out_of_range_messages,
+                          contribution_age, contribution_bmi, contribution_famkr, fmt_contribution, CAUSAL_CAVEAT)
 
 RUNS = ["final", "baseline", "unet", "unetpp"]
 
@@ -99,25 +99,24 @@ def get_patient_inputs(args):
     return age, bmi, famkr
 
 
-def _fmt_ci(block):
-    sign = "+" if block["value"] >= 0 else ""
-    return f"{sign}{block['value']:.2f} (95% CI {block['ci_low']:.2f} to {block['ci_high']:.2f})"
-
-
 def causal_panel_lines(age, bmi, famkr, models):
     """Lines for both the terminal printout and the result figure's causal risk panel. Built
     once so the two stay identical. Uses causal_model.py's per-factor regression-adjustment
     estimates (age total/direct/indirect-via-BMI, BMI, family history, all relative to the
     reference profile age 50/BMI 25/no family history) plus the obesity-by-age-group effect -
-    the same models behind causal_query.py's interactive what-if tool."""
+    the same models behind causal_query.py's interactive what-if tool. If age/BMI falls
+    outside the OAI study population, refuses to compute anything (matches causal_query.py)."""
     lines = ["Causal risk panel (population-level estimates, not derived from this image):"]
     if age is None or bmi is None:
         lines.append("  Age/BMI not given - need both for a per-factor breakdown.")
         lines.append(f"  Caveat: {CAUSAL_CAVEAT}")
         return lines
 
-    for w in warn_if_out_of_range(models, age, bmi):
-        lines.append(f"  WARNING: {w}")
+    refusal = out_of_range_messages(models, age, bmi)
+    if refusal:
+        lines.extend(f"  {m}" for m in refusal)
+        return lines
+
     if famkr is None:
         famkr_used = models["most_common_famkr"]
         lines.append(f"  Family history skipped - using the population's most common value "
@@ -125,20 +124,23 @@ def causal_panel_lines(age, bmi, famkr, models):
     else:
         famkr_used = famkr
     obese = bmi >= 30
-    kl_profile = expected_kl(models, age, bmi, famkr_used)
     ref = models["reference"]
-    kl_ref = expected_kl(models, ref["age"], ref["bmi"], ref["famkr"])
     lines.append(f"  This patient: age {age:.0f}, BMI {bmi:.1f} -> {'obese' if obese else 'not obese'} "
                  f"(threshold 30), family history {'yes' if famkr_used else 'no'}.")
-    lines.append(f"  Expected KL grade: {kl_profile:.2f} (reference age 50/BMI 25/no family history: {kl_ref:.2f}).")
+    lines.append(f"  Expected KL grade: {fmt_expected_kl(models, age, bmi, famkr_used)} "
+                 f"(reference age 50/BMI 25/no family history: "
+                 f"{fmt_expected_kl(models, ref['age'], ref['bmi'], ref['famkr'])}).")
 
     age_c = contribution_age(models, age)
-    lines.append(f"  Age contribution ({age:.0f} vs 50): total {_fmt_ci(age_c['total'])} = "
-                 f"direct {_fmt_ci(age_c['direct'])} + via BMI {_fmt_ci(age_c['indirect'])}")
+    if age_c["total"]["is_reference"]:
+        lines.append(f"  Age contribution ({age:.0f} vs 50): same as reference (no contribution)")
+    else:
+        lines.append(f"  Age contribution ({age:.0f} vs 50): total {fmt_contribution(age_c['total'])} = "
+                     f"direct {fmt_contribution(age_c['direct'])} + via BMI {fmt_contribution(age_c['indirect'])}")
     bmi_c = contribution_bmi(models, bmi)
-    lines.append(f"  BMI contribution ({bmi:.1f} vs 25): {_fmt_ci(bmi_c)}")
+    lines.append(f"  BMI contribution ({bmi:.1f} vs 25): {fmt_contribution(bmi_c)}")
     famkr_c = contribution_famkr(models, famkr_used)
-    lines.append(f"  Family history contribution: {_fmt_ci(famkr_c)}")
+    lines.append(f"  Family history contribution: {fmt_contribution(famkr_c)}")
 
     band = age_group_label(age)
     ob = models["obesity_by_age_group"][band]
