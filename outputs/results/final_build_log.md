@@ -129,6 +129,57 @@ test-set numbers are close but not statistically distinguishable, and it lost on
 pre-registered validation selection criterion. **kl_final remains the project's best
 classifier going into Phase 4.**
 
+## Phase 4: XAI
+Models explained: **kl_final** and **kl_hybrid1** (the hybrid with the best val QWK - 0.8320
+vs Hybrid 2's 0.8170; neither beat kl_final overall, but the brief asks for "whichever hybrid
+has the best val QWK" regardless). SHAP additionally run on Hybrid 2 since it exists.
+
+**Grad-CAM** (`scripts/run_xai.py`, hooked on `model.features`, the last ConvNeXt stage,
+before CBAM reweighting): CORAL's 4 threshold logits don't give a single class score the way
+softmax does, so the Grad-CAM target is the **sum of the 4 threshold logits** - a monotonic
+proxy for the predicted grade (more thresholds crossed, more confidently = larger sum),
+the same idea noted as the planned approach in CLAUDE.md before this phase started.
+
+15 test images selected (3/grade: 1 wrong + 2 correct prediction per grade, from kl_final's
+test predictions) - exactly 5 wrong as required. Saved to `outputs/results/xai/KL{grade}_*.png`,
+each a 2x3 grid: kl_final and kl_hybrid1 rows, each showing input / Grad-CAM overlay (with the
+Phase-2 joint-row drawn as a reference line) / CBAM attention overlay.
+
+**Quantitative joint-region check**: band = joint_row (from `measure_jsw.find_joint_row`,
+reused from Phase 2) +-15% of image height; fraction of Grad-CAM mass (upsampled, clipped to
+>=0, normalized to sum 1) falling inside that band, per image. Results
+(`outputs/results/xai/cam_mass_quantitative.csv`):
+- By true KL grade (kl_final): KL0=0.49, KL1=0.60, KL2=0.60, KL3=0.59, **KL4=0.24** (notably
+  lower). Visual inspection of the KL4 examples shows why: Grad-CAM concentrates on bilateral
+  femoral condyle osteophytes sitting clearly *above* the joint-line band, not on the band
+  itself - correct, clinically meaningful attention (osteophytes are a primary severity
+  marker, especially once the joint space itself is too collapsed to be the most informative
+  signal), just outside this particular band definition. Not a model failure; a limitation of
+  the band-based metric for severe cases.
+- Correct vs incorrect (kl_final): correct=0.48, incorrect=0.55 - correct predictions rely
+  *less* on the narrow joint-line band than incorrect ones, on this small 15-image sample.
+  Interesting but not over-interpreted given n=15; flagging as a direction for a larger check,
+  not a conclusion.
+
+**CBAM attention maps** saved alongside Grad-CAM in the same figures (third column of each row).
+
+**SHAP (Hybrid 2 exists -> required)**: `scripts/run_shap_hybrid2.py`. Multi-modal per-instance
+setup - each of 60 sampled test instances holds its own X-ray fixed and perturbs only the 2
+tabular features (age, BMI) against a 20-row background of standardized training tabular
+values, via `shap.KernelExplainer`. **Bug caught in a 3-instance test run before the full 60**:
+explaining the discretized predicted grade (`coral_probs_to_grade`, a step function) gave
+exactly zero SHAP values, since small tabular perturbations rarely cross a 0.5 threshold
+boundary - switched the explained target to the continuous sum of the 4 sigmoid outputs (a
+0-4 continuous proxy for the predicted grade), which gave real signal immediately.
+Mean |SHAP|: age 0.0025, BMI 0.0015 - age mattering somewhat more than BMI for this model,
+both small relative to the image's influence (expected, since the image branch dominates).
+Direction is clinically sensible: higher age and higher BMI both push the prediction toward
+higher grades (`outputs/results/xai/shap_hybrid2_summary.png`), consistent with known OA risk
+factors. (Minor fix along the way: the bar chart and summary plot shared a stale title because
+a new matplotlib figure wasn't opened between the two `savefig` calls - fixed by explicitly
+closing/opening figures; regenerated both plots from the saved SHAP values CSV rather than
+re-running the ~70s computation.)
+
 ## Phase 1: Hybrid 1 (CNN + Transformer)
 Added `--head {mlp,transformer}` to train_classifier.py/kl_common.py (default mlp = unchanged
 behavior). `transformer` builds `ConvNeXtCBAMTransformer`: ConvNeXt-Tiny+CBAM feature map

@@ -8,3 +8,4 @@ pandas
 matplotlib
 scipy
 pydicom
+shap
