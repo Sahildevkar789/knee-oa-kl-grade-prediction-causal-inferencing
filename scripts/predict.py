@@ -38,13 +38,6 @@ HYBRID2_TABULAR_COLS = ["V00AGE", "P01BMI"]   # sex omitted - no sex column exis
 HYBRID2_TAB_MEAN = np.array([61.0, 28.58], dtype=np.float32)   # training-set stats, from Phase 3's log
 HYBRID2_TAB_STD = np.array([9.24, 4.88], dtype=np.float32)
 
-# Hides the Grad-CAM/JSW panels and terminal lines for now, per request (2026-10-22) - keeps
-# the result output to input X-ray + probability bar + causal risk panel. Grad-CAM is still
-# computed internally (classify_rgb always does it for --run final) in case this is flipped
-# back to True later; only display is skipped.
-SHOW_XAI_PANELS = False
-
-
 def to_tensor(rgb, size, device):
     x = (cv2.resize(rgb, (size, size)) / 255.0 - np.array(MEAN)) / np.array(STD)
     return torch.tensor(x.transpose(2, 0, 1), dtype=torch.float32).unsqueeze(0).to(device)
@@ -229,62 +222,64 @@ def predict_image_auto_crop(image_path, crop_seg_model, seg_model, classifier, r
 
 
 def report(image_path, img, grade, probs, out_dir, plt, cam=None, side=None,
-          age=None, bmi=None, famkr=None, causal_coefs=None):
-    """Prints the prediction and builds + saves the result figure. With cam given AND
-    SHOW_XAI_PANELS on, shows input/Grad-CAM/JSW/probabilities (4 panels); otherwise just
-    input/probabilities (2). Either way, one more panel is appended: the causal risk panel
-    (Phase 5's population finding, plus a patient-specific estimate if age/bmi were given).
-    age/bmi/famkr are for this panel only - the predicted grade above always comes from the
-    image alone."""
-    show_xai = cam is not None and SHOW_XAI_PANELS
+          age=None, bmi=None, famkr=None, causal_coefs=None, show_jsw=False, no_xai=False):
+    """Prints the prediction and builds + saves the result figure. With cam given (--run final):
+    Grad-CAM is shown by default (pass no_xai=True to hide it), JSW is hidden by default (pass
+    show_jsw=True to show it, labeled experimental/not validated). The causal risk panel is
+    always appended last. age/bmi/famkr are for that panel only - the predicted grade above
+    always comes from the image alone."""
+    show_gradcam = cam is not None and not no_xai
+    show_jsw = show_jsw and cam is not None
     print(f"\nImage: {image_path}")
     print(f"Predicted KL grade: {grade} - {KL_TEXT[grade]} ({probs[grade] * 100:.1f}% confidence)")
     for g in range(5):
         print(f"  KL{g}: {probs[g] * 100:5.1f}%")
 
-    jsw = None
-    if show_xai:
+    jsw, comp = None, None
+    if show_jsw:
         jsw = measure_jsw_array(img)
         comp = assign_compartments(side, jsw) if side else {
             "medial_min_jsw": None, "lateral_min_jsw": None, "compartment_label": "unknown"}
         if comp["medial_min_jsw"] is not None:
-            print(f"  JSW (normalized by joint width) - medial min: {comp['medial_min_jsw']:.3f}, "
-                 f"lateral min: {comp['lateral_min_jsw']:.3f}")
+            print(f"  JSW (experimental, not validated; normalized by joint width) - medial min: "
+                 f"{comp['medial_min_jsw']:.3f}, lateral min: {comp['lateral_min_jsw']:.3f}")
         else:
-            print(f"  JSW (side unknown - labeled left/right of image) - left min: {jsw['left_min_jsw']:.3f}, "
-                 f"right min: {jsw['right_min_jsw']:.3f}")
+            print(f"  JSW (experimental, not validated; side unknown - labeled left/right of image) - "
+                 f"left min: {jsw['left_min_jsw']:.3f}, right min: {jsw['right_min_jsw']:.3f}")
 
     causal_lines = causal_panel_lines(age, bmi, famkr, causal_coefs)
     print()
     for line in causal_lines:
         print(f"  {line}")
 
-    n_panels = 3 if not show_xai else 5
+    n_panels = 2 + show_gradcam + show_jsw + 1   # input, [Grad-CAM], [JSW], prob, causal
     fig, axes = plt.subplots(1, n_panels, figsize=(5.5 * n_panels, 5))
-    axes[0].imshow(img); axes[0].set_title("Input X-ray"); axes[0].axis("off")
+    idx = 0
+    axes[idx].imshow(img); axes[idx].set_title("Input X-ray"); axes[idx].axis("off")
+    idx += 1
 
-    if not show_xai:
-        prob_ax = axes[1]
-        causal_ax = axes[2]
-    else:
+    if show_gradcam:
         cam_up = cv2.resize(cam, (img.shape[1], img.shape[0]))
-        axes[1].imshow(img, cmap="gray"); axes[1].imshow(cam_up, cmap="jet", alpha=0.45)
-        axes[1].set_title("Grad-CAM"); axes[1].axis("off")
+        axes[idx].imshow(img, cmap="gray"); axes[idx].imshow(cam_up, cmap="jet", alpha=0.45)
+        axes[idx].set_title("Grad-CAM"); axes[idx].axis("off")
+        idx += 1
 
-        axes[2].imshow(img)
-        axes[2].axhline(jsw["joint_row"], color="yellow", linestyle="--", linewidth=1, alpha=0.7)
+    if show_jsw:
+        axes[idx].imshow(img)
+        axes[idx].axhline(jsw["joint_row"], color="yellow", linestyle="--", linewidth=1, alpha=0.7)
         for c in jsw["left_cols"][::3]:
-            axes[2].plot(c, jsw["joint_row"], ".", color="lime", markersize=2)
+            axes[idx].plot(c, jsw["joint_row"], ".", color="lime", markersize=2)
         for c in jsw["right_cols"][::3]:
-            axes[2].plot(c, jsw["joint_row"], ".", color="orange", markersize=2)
+            axes[idx].plot(c, jsw["joint_row"], ".", color="orange", markersize=2)
         if comp["medial_min_jsw"] is not None:
             jsw_label = f"medial min={comp['medial_min_jsw']:.3f}  lateral min={comp['lateral_min_jsw']:.3f}"
         else:
             jsw_label = f"left min={jsw['left_min_jsw']:.3f}  right min={jsw['right_min_jsw']:.3f} (side unknown)"
-        axes[2].set_title(f"JSW\n{jsw_label}", fontsize=10); axes[2].axis("off")
-        prob_ax = axes[3]
-        causal_ax = axes[4]
+        axes[idx].set_title(f"JSW (experimental, not validated)\n{jsw_label}", fontsize=9); axes[idx].axis("off")
+        idx += 1
 
+    prob_ax = axes[idx]; idx += 1
+    causal_ax = axes[idx]
     causal_ax.axis("off")
     causal_wrapped = "\n".join(textwrap.fill(line, 38, subsequent_indent="  ") for line in causal_lines)
     causal_ax.text(0.0, 1.0, causal_wrapped, va="top", ha="left", fontsize=7.8, family="monospace",
@@ -333,6 +328,10 @@ def main():
     ap.add_argument("--family-history", choices=["yes", "no"], default=None,
                     help="Family history of knee replacement - for the causal risk panel only, never fed to the classifier. Skips the terminal prompt.")
     ap.add_argument("--sex", choices=["M", "F"], default=None, help="Accepted for forward-compatibility; not used by any current model (no sex data available)")
+    ap.add_argument("--show-jsw", action="store_true",
+                    help="Also show the JSW panel (--run final only), labeled 'JSW (experimental, not validated)' - hidden by default")
+    ap.add_argument("--no-xai", action="store_true",
+                    help="Hide the Grad-CAM panel (--run final only) - shown by default")
     ap.add_argument("--ckpt-dir", default="outputs/checkpoints")
     ap.add_argument("--out-dir", default="outputs/predictions")
     ap.add_argument("--show", action="store_true", help="Open the result window (always on in file-browser mode)")
@@ -370,14 +369,16 @@ def main():
                 tag = f"{os.path.splitext(os.path.basename(path))[0]}_{label}"
                 side = label if label in ("left", "right") else infer_side(path)
                 report(tag, crop, grade, probs, args.out_dir, plt, cam=cam, side=side,
-                      age=age, bmi=bmi, famkr=famkr, causal_coefs=causal_coefs)
+                      age=age, bmi=bmi, famkr=famkr, causal_coefs=causal_coefs,
+                      show_jsw=args.show_jsw, no_xai=args.no_xai)
                 if args.show or interactive:
                     plt.show()
                 plt.close("all")
         else:
             img, grade, probs, cam = predict_image(path, seg_model, classifier, args.run, device, tab=tab)
             report(path, img, grade, probs, args.out_dir, plt, cam=cam, side=infer_side(path),
-                  age=age, bmi=bmi, famkr=famkr, causal_coefs=causal_coefs)
+                  age=age, bmi=bmi, famkr=famkr, causal_coefs=causal_coefs,
+                  show_jsw=args.show_jsw, no_xai=args.no_xai)
             if args.show or interactive:
                 plt.show()
             plt.close("all")

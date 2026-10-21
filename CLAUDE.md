@@ -312,12 +312,18 @@ python scripts/predict.py path/to/xray.png --age 65 --bmi 32   # see note below
 on val (0.8170 vs 0.8416), so kl_final is used regardless and a note explains why - this is
 intentional, not a bug, and documented in HYBRID2_BEAT_FINAL at the top of predict.py. --sex is
 accepted for forward-compatibility only; no model uses it, since no sex column exists in the
-dataset. The result window/figure has 3 panels: input X-ray, probability bar chart, causal risk
-panel (see below). **Grad-CAM and JSW are hidden for now** (`SHOW_XAI_PANELS = False` at the top
-of predict.py) - Grad-CAM is still computed internally for `--run final`, just not displayed or
-printed; flip that constant back to `True` to restore the old 5-panel layout (input/Grad-CAM/
-JSW/bar/causal) for `--run final`. **A web app is deferred to a later stage** - this terminal
-demo is the interface for now.
+dataset. The result window/figure has 4 panels for `--run final`: input X-ray, Grad-CAM, bar
+chart, causal risk panel (3 panels - no Grad-CAM - for `--run baseline|unet|unetpp`, since
+Grad-CAM/JSW are specific to the CORAL-head final model). `--show-jsw` adds a 5th panel, labeled
+"JSW (experimental, not validated)" (and the matching terminal line) - off by default since
+Phase 2 found JSW didn't meet the validation threshold (rho=-0.179 vs -0.3). `--no-xai` hides
+Grad-CAM instead, back to the 3-panel layout:
+```
+python scripts/predict.py path/to/xray.png                  # default: input, Grad-CAM, bar, causal (4 panels)
+python scripts/predict.py path/to/xray.png --show-jsw        # + JSW panel (5 panels)
+python scripts/predict.py path/to/xray.png --no-xai           # no Grad-CAM: input, bar, causal (3 panels)
+```
+**A web app is deferred to a later stage** - this terminal demo is the interface for now.
 
 ### Causal risk panel (added 2026-10-21/22) - asks for age/BMI/family history
 After an image is chosen (file-browser or single-file mode), predict.py prints "Enter patient

@@ -164,15 +164,21 @@ never adjusting for WOMAC/JSN/osteophyte grades). Extended DAG: `Age -> BMI -> y
 `FamilyHistoryKneeReplacement -> y` (`outputs/results/causal/causal_query_dag.png`), so age's
 effect can be split into the part mediated through BMI and the part that isn't.
 
-Each effect below is estimated two ways and cross-checked: a DoWhy `backdoor.linear_regression`
-estimate, and an equivalent statsmodels OLS fit of the same specification (for a confidence
-interval - this dowhy version's linear-regression estimator doesn't expose one directly). One
-methodological note from building this: DoWhy's `identify_effect()`, when given **both** a
-graph and a `common_causes` list, derives the adjustment set purely from graph structure and
-silently ignores `common_causes` - passing BMI as a "common cause" of age's direct effect while
-also passing a graph did nothing, since BMI isn't a graph-parent of Age (it's a mediator). The
-fix used throughout `causal_model.py` is to let DoWhy build its own graph from `common_causes`
-alone (no `graph` argument to `CausalModel`), which reproduces the OLS coefficient exactly.
+For each factor, the adjustment set was derived by reasoning about the DAG (e.g. BMI's effect
+is confounded by age, so age is in BMI's adjustment set; age's *direct* effect is defined by
+holding the BMI mediator fixed, so BMI is in that adjustment set instead) and then given to
+DoWhy explicitly as `common_causes`, rather than letting DoWhy re-derive it automatically from
+a graph object. Each effect is estimated two ways and cross-checked: a DoWhy
+`backdoor.linear_regression` estimate, and an equivalent statsmodels OLS fit of the same
+specification (for a confidence interval - this dowhy version's linear-regression estimator
+doesn't expose one directly). One methodological finding from building this, which is *why*
+the adjustment set is passed explicitly instead of via a graph: DoWhy's `identify_effect()`,
+when given **both** a graph and a `common_causes` list, derives the adjustment set purely from
+graph structure and silently ignores `common_causes` - passing BMI as a "common cause" of age's
+direct effect while also passing a graph did nothing, since BMI isn't a graph-parent of Age
+(it's a mediator). The fix used throughout `causal_model.py` is to let DoWhy build its own graph
+from `common_causes` alone (no `graph` argument to `CausalModel`), which reproduces the OLS
+coefficient exactly.
 
 | Effect | Estimate | 95% CI | n |
 |---|---|---|---|
@@ -195,10 +201,11 @@ BMI in this cohort, so direct + indirect ≈ 0.226, matching the independently-e
 effect as an internal consistency check). **BMI's effect is roughly linear** over the observed
 range (16.9-48.7): a BMI-band model's dummy coefficients at <25/25-30/30-35/35+ all fall inside
 what the straight-line per-unit effect predicts at each band's mean BMI
-(`causal_query_models.json`'s `bmi_effect.linearity`). **The obesity effect doesn't show a clear
-age trend** - 55-65 is somewhat higher than the other two bands, but all three CIs overlap
-substantially, so this reads as "doesn't obviously differ by age group" rather than a clean
-dose-response story.
+(`causal_query_models.json`'s `bmi_effect.linearity`). **The obesity effect's confidence
+intervals overlap across all three age groups** (<55: [0.347, 0.592]; 55-65: [0.419, 0.672];
+65+: [0.279, 0.545]) - 55-65 has the highest point estimate, but given the overlap there is no
+evidence the obesity effect actually differs by age group; it should be read as one effect of
+roughly +0.4 to +0.6 KL grade points, fairly stable across age, not three distinct effects.
 
 `causal_query.py` warns rather than silently extrapolating when a queried age or BMI falls
 outside the data's observed range, and every output - population effects and the interactive
