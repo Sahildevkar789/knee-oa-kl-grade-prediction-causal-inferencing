@@ -183,6 +183,70 @@ def build_hybrid1(ckpt_dir, device, init_from="kl_final_best.pt"):
     return model.to(device)
 
 
+class ConvNeXtCBAMFusion(nn.Module):
+    """Hybrid 2: pooled ConvNeXt-Tiny+CBAM image features concatenated with a small MLP over
+    tabular features (age/BMI, standardized by the caller), followed by a CORAL head."""
+    def __init__(self, base_convnext, cbam_channels, tabular_dim, tab_hidden=32, img_proj=128):
+        super().__init__()
+        self.features = base_convnext.features
+        self.cbam = CBAM(cbam_channels)
+        self.avgpool = base_convnext.avgpool
+        self.img_proj = nn.Linear(cbam_channels, img_proj)
+        self.tab_mlp = nn.Sequential(nn.Linear(tabular_dim, tab_hidden), nn.ReLU(inplace=True),
+                                     nn.Linear(tab_hidden, tab_hidden), nn.ReLU(inplace=True))
+        self.head = nn.Linear(img_proj + tab_hidden, 4)
+        self.last_attn = None
+
+    def forward(self, x, tab):
+        x = self.features(x)
+        x, attn = self.cbam(x)
+        self.last_attn = attn.detach()
+        x = self.avgpool(x).flatten(1)
+        x = F.relu(self.img_proj(x))
+        t = self.tab_mlp(tab)
+        return self.head(torch.cat([x, t], dim=1))
+
+
+def build_hybrid2(ckpt_dir, device, tabular_dim, init_from="kl_final_best.pt"):
+    """Builds Hybrid 2, initializing its features/CBAM weights from a trained ConvNeXtCBAM
+    checkpoint the same way build_hybrid1 does."""
+    base = convnext_tiny(weights=None)
+    in_f = base.classifier[2].in_features
+    model = ConvNeXtCBAMFusion(base, cbam_channels=in_f, tabular_dim=tabular_dim)
+    if init_from:
+        src_state = torch.load(os.path.join(ckpt_dir, init_from), map_location=device)
+        model_state = model.state_dict()
+        n_loaded = 0
+        for k, v in src_state.items():
+            if k in model_state and model_state[k].shape == v.shape:
+                model_state[k] = v
+                n_loaded += 1
+        model.load_state_dict(model_state)
+        print(f"Hybrid2: initialized {n_loaded} tensors from {init_from} (features.*/cbam.*)")
+    return model.to(device)
+
+
+class KLDatasetFusion(Dataset):
+    """Like KLDataset, but also returns a tabular feature vector per image."""
+    def __init__(self, paths, labels, tabular, transform, use_clahe=False):
+        self.paths, self.labels, self.tabular = paths, labels, tabular
+        self.transform, self.use_clahe = transform, use_clahe
+
+    def __len__(self):
+        return len(self.paths)
+
+    def __getitem__(self, i):
+        img = cv2.imread(self.paths[i], cv2.IMREAD_COLOR)
+        if img is None:
+            raise ValueError(f"Could not read image: {self.paths[i]}")
+        img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+        if self.use_clahe:
+            img = apply_clahe(img)
+        img_t = self.transform(image=img)["image"]
+        tab_t = torch.tensor(self.tabular[i], dtype=torch.float32)
+        return img_t, tab_t, self.labels[i]
+
+
 def build_classifier(backbone, in_ch, pretrained=True, out_dim=5, attention=None):
     """ImageNet-pretrained backbone with a classification head. in_ch=4 adds a channel for the
     bone mask. out_dim=4 switches to a CORAL ordinal head (see coral_loss/coral_decode).

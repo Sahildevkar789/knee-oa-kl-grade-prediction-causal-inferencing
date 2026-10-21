@@ -1,0 +1,25 @@
+{
+  "model": "Hybrid 2 - pooled ConvNeXt-Tiny+CBAM image features + MLP over tabular (age, BMI) -> CORAL head",
+  "source_checkpoint": "kl_hybrid2_best.pt (seed 42)",
+  "selection_reason": "Better of two seed runs (42: val QWK 0.8260, 7: 0.8080); seed 42 used.",
+  "initialized_from": "kl_final_best.pt (features.* and cbam.* weights only)",
+  "tabular_features": ["V00AGE", "P01BMI"],
+  "tabular_features_requested_but_unavailable": ["sex - no sex/gender column exists anywhere in unified_oai_dataset.csv (1193 columns checked exhaustively)"],
+  "jsw_features_included": false,
+  "jsw_exclusion_reason": "Phase 2: JSW not validated (medial_min_jsw vs medial JSN rho=-0.179, threshold was rho<=-0.3)",
+  "bmi_imputation": "training-set median (28.20), applied to 6 missing train values and unchanged to val/test",
+  "tabular_standardization": "training-set mean/std only, applied unchanged to val/test",
+  "backbone": "convnext_tiny", "attention": "cbam", "loss": "coral", "out_dim": 4,
+  "class_weights": "inverse", "clahe": true, "warmup_epochs": 2, "seed": 42,
+  "epochs": 25, "best_epoch": 1, "batch_size": 32, "lr": 0.0003, "patience": 6,
+  "val_qwk": 0.8260, "val_qwk_mean_2seed": 0.8170,
+  "test_qwk": 0.8598, "test_accuracy": 0.6973, "test_macro_f1": 0.6929, "test_mae": 0.3384,
+  "vs_kl_final": {
+    "kl_final_val_qwk_mean_2seed": 0.8416,
+    "selection_outcome": "did NOT beat kl_final on val (0.8170 < 0.8416)",
+    "test_qwk_diff": 0.0029, "test_qwk_bootstrap_95ci": [-0.0072, 0.0132], "test_qwk_significant": false,
+    "test_acc_diff": 0.0036, "test_acc_bootstrap_95ci": [-0.0145, 0.0218], "test_acc_significant": false
+  },
+  "requires_at_prediction_time": ["age", "BMI"],
+  "notes": "Both seeds hit their best val QWK within the first 2 epochs and degraded afterward - the same instability pattern seen in Hybrid 1, consistent with a randomly-initialized new head destabilizing an already-converged fine-tuned backbone. Test-set numbers are numerically higher than kl_final but not statistically significant, and val selection favored kl_final. Not adopted as the project's best model."
+}

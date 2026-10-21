@@ -28,7 +28,11 @@ outputs/checkpoints/kl_baseline_efficientnet_b0_seed*
 outputs/results/_train_*.txt
 outputs/results/_abl_*.txt
 outputs/results/_hybrid1_*.txt
+outputs/results/_hybrid2_*.txt
 
 # Redundant duplicate of kl_hybrid1_best.pt (seed7) - the seed42 original was overwritten
 # when seed7 was picked as the better one; see final_build_log.md Phase 1 process note
 outputs/checkpoints/kl_hybrid1_seed7_best.pt
+
+# Non-winning seed for Hybrid 2 (seed 42 won; kept here only for the record in training logs)
+outputs/checkpoints/kl_hybrid2_seed7_best.pt

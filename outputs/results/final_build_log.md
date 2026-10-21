@@ -79,6 +79,56 @@ here and will be logged again when Phase 3 builds the tabular model. Phase 5's c
 analysis (BMI -> medial min JSW -> KL grade), which was conditional on validation, will be
 skipped and logged as such when reached.
 
+## Phase 3: Hybrid 2 (image + tabular fusion)
+**Data limitation found and logged, not guessed around**: the brief says "find the sex column
+in unified_oai_dataset.csv and add it to clinical_features.csv," but an exhaustive
+case-insensitive search of all 1,193 columns found no sex/gender field at all (`V00isexmdt`
+is the only "sex"-containing name, and it's a visit date, not sex). Proceeding with **age + BMI
+only** as Hybrid 2's tabular features, per "don't stop to ask, log it and continue."
+JSW is also excluded, per Phase 2's not-validated verdict (already logged there).
+
+**Data handling** (hard rules followed): BMI has 6 missing values in train, 0 in val/test -
+imputed with the **training-set median only** (28.20), applied unchanged to val/test (and
+logged each time). Tabular features standardized with **training-set mean/std only**
+(age: mean 61.0, std 9.24; BMI: mean 28.58, std 4.88). `clinical_features.csv` lists one test
+row whose image file doesn't exist on disk (the same pre-existing gap noted everywhere else in
+this project) - added the same existence filter `list_split()` already uses elsewhere, so
+Hybrid 2's test set is the same 1,655 images as every other model's.
+
+**Architecture**: `ConvNeXtCBAMFusion` (`kl_common.py`) - same ConvNeXt-Tiny+CBAM trunk as
+kl_final, globally pooled (768-dim) then projected to 128 dims, concatenated with a 2-layer
+MLP (32 hidden units) over the 2 standardized tabular features, then a CORAL head. Built as a
+dedicated script (`scripts/train_hybrid2.py` + `scripts/evaluate_hybrid2.py`) rather than
+bolting a two-input forward pass onto the shared single-image training loop, since the
+input signature is genuinely different - kept the blast radius on the well-tested existing
+scripts at zero. Initialized features/CBAM from kl_final_best.pt (181 tensors, same transfer
+mechanism as Hybrid 1). Smoke-tested (1 epoch, val QWK 0.8222) before committing to full runs.
+
+Trained seeds 42 and 7 (clahe+warmup2, same recipe as kl_final and Hybrid 1):
+- seed42: best val QWK 0.8260 at epoch 1, then degraded (same early-epoch-peak pattern as
+  Hybrid 1 - a new randomly-initialized head destabilizing a converged fine-tuned backbone).
+- seed7: best val QWK 0.8080 at epoch 2, also degraded afterward.
+- **Mean val QWK = 0.8170**, below kl_final's 0.8416 reference.
+
+Better seed (42, 0.8260) saved as `outputs/checkpoints/kl_hybrid2_best.pt` (used a seed-
+specific filename for seed 7 from the start this time, avoiding Hybrid 1's accidental
+same-name overwrite). `outputs/checkpoints/kl_hybrid2_config.json` records every option,
+including that this model needs age+BMI at prediction time.
+
+**Test result**: Accuracy 0.6973, QWK **0.8598**, Macro F1 0.6929, MAE 0.3384 - again
+numerically beats kl_final (0.6937/0.8570/0.6926/0.3396) despite losing on val, same pattern
+as Hybrid 1. Paired bootstrap (2,000 resamples) vs kl_final: QWK mean diff +0.0029, 95% CI
+[-0.0072, 0.0132] - **not significant**. Accuracy mean diff +0.0036, 95% CI [-0.0145, 0.0218] -
+also not significant. (Bootstrap script needed a path-separator normalization fix - kl_final's
+predictions used backslash paths from glob, kl_hybrid2's used forward-slash paths from
+clinical_features.csv's IMAGE_PATH column; both reference the same files, just written
+differently. Fixed in `bootstrap_compare.py` once, benefits all future comparisons.)
+
+**Conclusion**: Hybrid 2 does not beat kl_final either, for the same reason as Hybrid 1 -
+test-set numbers are close but not statistically distinguishable, and it lost on the
+pre-registered validation selection criterion. **kl_final remains the project's best
+classifier going into Phase 4.**
+
 ## Phase 1: Hybrid 1 (CNN + Transformer)
 Added `--head {mlp,transformer}` to train_classifier.py/kl_common.py (default mlp = unchanged
 behavior). `transformer` builds `ConvNeXtCBAMTransformer`: ConvNeXt-Tiny+CBAM feature map

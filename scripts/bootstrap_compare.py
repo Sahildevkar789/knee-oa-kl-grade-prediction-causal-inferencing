@@ -7,8 +7,11 @@ import pandas as pd
 from sklearn.metrics import cohen_kappa_score, accuracy_score
 
 path_a, path_b, label_a, label_b, out_csv = sys.argv[1:6]
-a = pd.read_csv(path_a).set_index("image_path")
-b = pd.read_csv(path_b).set_index("image_path")
+a = pd.read_csv(path_a)
+b = pd.read_csv(path_b)
+a["image_path"] = a["image_path"].str.replace("\\", "/", regex=False)
+b["image_path"] = b["image_path"].str.replace("\\", "/", regex=False)
+a, b = a.set_index("image_path"), b.set_index("image_path")
 assert set(a.index) == set(b.index), "Test sets differ between the two runs"
 b = b.loc[a.index]
 assert (a["true_grade"].values == b["true_grade"].values).all(), "Ground truth mismatch"

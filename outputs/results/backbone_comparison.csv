@@ -21,3 +21,5 @@ kl_baseline_convnext_tiny_warmup2_clahe_cbam_coral_cwsqrt,convnext_tiny,none,0.8
 kl_baseline_convnext_tiny_seed7_warmup2_clahe_cbam_coral_cwsqrt,convnext_tiny,none,0.8346,0.6344,0.6368,27897030,12.3,5.0,32.0,7.0,2.0,,,,,1.0,cbam,coral,sqrt,
 kl_hybrid1,convnext_tiny,none,0.8317,0.661,0.6663,29682886,6.7,1.0,32.0,42.0,2.0,,,,,1.0,cbam,coral,inverse,transformer
 kl_hybrid1_seed7,convnext_tiny,none,0.8323,0.6683,0.6669,29682886,7.0,1.0,32.0,7.0,2.0,,,,,1.0,cbam,coral,inverse,transformer
+kl_hybrid2,convnext_tiny_fusion,none,0.826,0.6513,0.6544,27992646,6.7,1.0,32.0,42.0,2.0,,,,,1.0,cbam,coral,inverse,fusion_tabular
+kl_hybrid2_seed7,convnext_tiny_fusion,none,0.808,0.6465,0.6176,27992646,8.3,2.0,32.0,7.0,2.0,,,,,1.0,cbam,coral,inverse,fusion_tabular
