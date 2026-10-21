@@ -13,6 +13,7 @@ either way and a note explains why (see HYBRID2_BEAT_FINAL below).
 """
 import os
 import argparse
+import textwrap
 import cv2
 import numpy as np
 import torch
@@ -23,6 +24,7 @@ from kl_common import (build_classifier, build_hybrid2, load_seg_model, apply_cl
                        grad_cam, MEAN, STD, IMG_SIZE, SEG_SIZE, KL_TEXT)
 from preprocess_xray import prepare_xray
 from measure_jsw import measure_jsw_array, assign_compartments
+from causal_model import load_or_fit_causal_regression, expected_kl
 
 RUNS = ["final", "baseline", "unet", "unetpp"]
 
@@ -35,12 +37,8 @@ HYBRID2_TABULAR_COLS = ["V00AGE", "P01BMI"]   # sex omitted - no sex column exis
 HYBRID2_TAB_MEAN = np.array([61.0, 28.58], dtype=np.float32)   # training-set stats, from Phase 3's log
 HYBRID2_TAB_STD = np.array([9.24, 4.88], dtype=np.float32)
 
-CAUSAL_SUMMARY = (
-    "Causal note (Phase 5, not from this image): under a simple DAG adjusting for age and "
-    "family history only, obesity (BMI>=30) is associated with roughly +0.48 to +0.58 higher "
-    "KL grade points on average - but unmeasured factors (activity level, prior injury, "
-    "occupation) could still confound this, so treat it as suggestive, not definitive."
-)
+CAUSAL_CAVEAT = ("Population-level estimate from OAI data under the causal model's assumptions; "
+                 "not a diagnosis or individual prediction.")
 
 
 def to_tensor(rgb, size, device):
@@ -65,6 +63,69 @@ def infer_side(path):
     if stem.endswith("R"):
         return "R"
     return None
+
+
+def prompt_optional(prompt_text, parse=float):
+    """Asks in the terminal, returns None on a blank/unparseable answer (the skip path) or on
+    EOF (so this also behaves when stdin isn't interactive, e.g. automated testing)."""
+    try:
+        raw = input(f"{prompt_text} (press Enter to skip): ").strip()
+    except EOFError:
+        raw = ""
+    if not raw:
+        return None
+    try:
+        return parse(raw)
+    except ValueError:
+        print(f"  Couldn't parse '{raw}', skipping.")
+        return None
+
+
+def get_patient_inputs(args):
+    """Age/BMI/family-history for the causal risk panel only - never fed to the classifier
+    (the predicted KL grade always comes from the image alone). Values given via --age/--bmi/
+    --family-history skip their prompt; everything else is asked for, Enter to skip."""
+    age = args.age if args.age is not None else prompt_optional("Patient age")
+    bmi = args.bmi if args.bmi is not None else prompt_optional("Patient BMI")
+    if args.family_history is not None:
+        famkr = {"yes": 1, "no": 0}[args.family_history]
+    else:
+        famkr = prompt_optional("Family history of knee replacement? (yes/no)", parse=str)
+        if famkr is not None:
+            famkr = {"y": 1, "yes": 1, "1": 1, "n": 0, "no": 0, "0": 0}.get(famkr.strip().lower())
+            if famkr is None:
+                print("  Couldn't parse that as yes/no, skipping.")
+    return age, bmi, famkr
+
+
+def causal_panel_lines(age, bmi, famkr, coefs):
+    """Lines for both the terminal printout and the result figure's causal risk panel. Built
+    once so the two stay identical (Phase 5's population finding, plus a patient-specific
+    estimate from the fitted regression-adjustment model if age and BMI were given)."""
+    lines = [
+        "Causal risk panel (Phase 5 finding - population-level, not derived from this image):",
+        "Obesity (BMI>=30) -> KL grade, adjusting for age + family history of knee replacement:",
+        "  Population ATE: +0.48 to +0.58 KL grade points (linear regression / propensity score matching).",
+    ]
+    if age is not None and bmi is not None:
+        obese = bmi >= 30
+        lines.append(f"  This patient: age {age:.0f}, BMI {bmi:.1f} -> "
+                     f"{'obese' if obese else 'not obese'} (BMI>=30 threshold).")
+        if famkr is None:
+            famkr_used = coefs["most_common_famkr"]
+            lines.append(f"  Family history skipped - using the population's most common value "
+                         f"({'yes' if famkr_used else 'no'}).")
+        else:
+            famkr_used = famkr
+        kl_obese = expected_kl(coefs, age, famkr_used, 1)
+        kl_not = expected_kl(coefs, age, famkr_used, 0)
+        lines.append(f"  Fitted model at this age/family history: expected KL grade "
+                     f"{kl_not:.2f} if not obese vs {kl_obese:.2f} if obese "
+                     f"(+{kl_obese - kl_not:.2f}).")
+    else:
+        lines.append("  Age/BMI not given - showing only the population-level finding above.")
+    lines.append(f"  Caveat: {CAUSAL_CAVEAT}")
+    return lines
 
 
 def load_models(run, ckpt_dir, device, use_hybrid2=False):
@@ -140,9 +201,13 @@ def predict_image_auto_crop(image_path, crop_seg_model, seg_model, classifier, r
     return [(label, crop, *classify_rgb(crop, seg_model, classifier, run, device, tab=tab)) for label, crop in crops]
 
 
-def report(image_path, img, grade, probs, out_dir, plt, cam=None, side=None):
+def report(image_path, img, grade, probs, out_dir, plt, cam=None, side=None,
+          age=None, bmi=None, famkr=None, causal_coefs=None):
     """Prints the prediction and builds + saves the result figure. With cam given (final/hybrid2
-    runs), shows 4 panels: input, Grad-CAM, JSW edges, probabilities. Otherwise the original 2."""
+    runs), shows input/Grad-CAM/JSW/probabilities (4 panels); otherwise input/probabilities (2).
+    Either way, one more panel is appended: the causal risk panel (Phase 5's population finding,
+    plus a patient-specific estimate if age/bmi were given). age/bmi/famkr are for this panel
+    only - the predicted grade above always comes from the image alone."""
     print(f"\nImage: {image_path}")
     print(f"Predicted KL grade: {grade} - {KL_TEXT[grade]} ({probs[grade] * 100:.1f}% confidence)")
     for g in range(5):
@@ -159,16 +224,20 @@ def report(image_path, img, grade, probs, out_dir, plt, cam=None, side=None):
         else:
             print(f"  JSW (side unknown - labeled left/right of image) - left min: {jsw['left_min_jsw']:.3f}, "
                  f"right min: {jsw['right_min_jsw']:.3f}")
-        print(f"  {CAUSAL_SUMMARY}")
+
+    causal_lines = causal_panel_lines(age, bmi, famkr, causal_coefs)
+    print()
+    for line in causal_lines:
+        print(f"  {line}")
+
+    n_panels = 3 if cam is None else 5
+    fig, axes = plt.subplots(1, n_panels, figsize=(5.5 * n_panels, 5))
+    axes[0].imshow(img); axes[0].set_title("Input X-ray"); axes[0].axis("off")
 
     if cam is None:
-        fig, axes = plt.subplots(1, 2, figsize=(11, 5))
-        axes[0].imshow(img); axes[0].set_title("Input X-ray"); axes[0].axis("off")
         prob_ax = axes[1]
+        causal_ax = axes[2]
     else:
-        fig, axes = plt.subplots(1, 4, figsize=(20, 5))
-        axes[0].imshow(img); axes[0].set_title("Input X-ray"); axes[0].axis("off")
-
         cam_up = cv2.resize(cam, (img.shape[1], img.shape[0]))
         axes[1].imshow(img, cmap="gray"); axes[1].imshow(cam_up, cmap="jet", alpha=0.45)
         axes[1].set_title("Grad-CAM"); axes[1].axis("off")
@@ -185,6 +254,13 @@ def report(image_path, img, grade, probs, out_dir, plt, cam=None, side=None):
             jsw_label = f"left min={jsw['left_min_jsw']:.3f}  right min={jsw['right_min_jsw']:.3f} (side unknown)"
         axes[2].set_title(f"JSW\n{jsw_label}", fontsize=10); axes[2].axis("off")
         prob_ax = axes[3]
+        causal_ax = axes[4]
+
+    causal_ax.axis("off")
+    causal_wrapped = "\n".join(textwrap.fill(line, 38, subsequent_indent="  ") for line in causal_lines)
+    causal_ax.text(0.0, 1.0, causal_wrapped, va="top", ha="left", fontsize=7.8, family="monospace",
+                   transform=causal_ax.transAxes)
+    causal_ax.set_title("Causal risk panel", fontsize=10)
 
     fig.canvas.manager.set_window_title(f"KL grade prediction - {os.path.basename(image_path)}")
     colors = ["#888888"] * 5
@@ -221,8 +297,12 @@ def main():
     ap.add_argument("image", nargs="?", help="Path to a knee X-ray. Leave out to choose with a file browser.")
     ap.add_argument("--run", choices=RUNS, default="final",
                     help="Which trained classifier to use (final = the locked ConvNeXt-tiny+CLAHE+CBAM+CORAL model)")
-    ap.add_argument("--age", type=float, default=None, help="Patient age - with --bmi, considers Hybrid 2 (see module docstring)")
-    ap.add_argument("--bmi", type=float, default=None, help="Patient BMI - with --age, considers Hybrid 2")
+    ap.add_argument("--age", type=float, default=None,
+                    help="Patient age - for the causal risk panel; with --bmi, also considers Hybrid 2 (see module docstring). Skips the terminal prompt.")
+    ap.add_argument("--bmi", type=float, default=None,
+                    help="Patient BMI - for the causal risk panel; with --age, also considers Hybrid 2. Skips the terminal prompt.")
+    ap.add_argument("--family-history", choices=["yes", "no"], default=None,
+                    help="Family history of knee replacement - for the causal risk panel only, never fed to the classifier. Skips the terminal prompt.")
     ap.add_argument("--sex", choices=["M", "F"], default=None, help="Accepted for forward-compatibility; not used by any current model (no sex data available)")
     ap.add_argument("--ckpt-dir", default="outputs/checkpoints")
     ap.add_argument("--out-dir", default="outputs/predictions")
@@ -249,19 +329,26 @@ def main():
     print(f"Loading models ({'hybrid2' if use_hybrid2 else args.run}) on {device}...")
     seg_model, classifier = load_models(args.run, args.ckpt_dir, device, use_hybrid2=use_hybrid2)
     crop_seg_model = load_seg_model("unetpp", args.ckpt_dir, device) if args.auto_crop else None
+    causal_coefs = load_or_fit_causal_regression()
 
     def handle(path):
+        # Age/BMI/family history are for the causal risk panel only - asked here (or taken from
+        # --age/--bmi/--family-history, which skip the prompt) per image, never fed to the
+        # classifier above: the predicted grade always comes from the image alone.
+        age, bmi, famkr = get_patient_inputs(args)
         if args.auto_crop:
             for label, crop, grade, probs, cam in predict_image_auto_crop(path, crop_seg_model, seg_model, classifier, args.run, device, tab=tab):
                 tag = f"{os.path.splitext(os.path.basename(path))[0]}_{label}"
                 side = label if label in ("left", "right") else infer_side(path)
-                report(tag, crop, grade, probs, args.out_dir, plt, cam=cam, side=side)
+                report(tag, crop, grade, probs, args.out_dir, plt, cam=cam, side=side,
+                      age=age, bmi=bmi, famkr=famkr, causal_coefs=causal_coefs)
                 if args.show or interactive:
                     plt.show()
                 plt.close("all")
         else:
             img, grade, probs, cam = predict_image(path, seg_model, classifier, args.run, device, tab=tab)
-            report(path, img, grade, probs, args.out_dir, plt, cam=cam, side=infer_side(path))
+            report(path, img, grade, probs, args.out_dir, plt, cam=cam, side=infer_side(path),
+                  age=age, bmi=bmi, famkr=famkr, causal_coefs=causal_coefs)
             if args.show or interactive:
                 plt.show()
             plt.close("all")

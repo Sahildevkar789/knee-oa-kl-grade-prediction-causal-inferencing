@@ -47,6 +47,8 @@ interface is `predict.py`'s terminal demo (Grad-CAM + JSW panels, see Commands b
 - `scripts/measure_jsw.py` — intensity-based joint space width measurement.
 - `scripts/run_xai.py`, `scripts/run_shap_hybrid2.py`, `scripts/run_causal.py` — one-off
   analysis scripts for Phases 4/5, kept under `scripts/` for the record (not reusable CLIs).
+- `scripts/causal_model.py` — fits (or loads, from `outputs/results/causal/kl_regression_coefs.json`)
+  the linear regression behind `predict.py`'s causal risk panel; see Commands below.
 - `scripts/bootstrap_compare.py` — paired bootstrap significance test between any two
   `*_test_predictions.csv` files; reusable.
 
@@ -289,7 +291,8 @@ python scripts/train_classifier.py --backbone efficientnet_b0|resnet50|densenet1
     [--loss ce|coral] [--class-weights inverse|sqrt|none] [--seed N] [--ckpt-name NAME]
 python scripts/evaluate_classifier.py [--ckpt-name NAME | --mask-source none|unet|unetpp] \
     [--backbone ...] [--attention ...] [--loss ...] [--clahe] [--tta] [--split val|test]
-python scripts/predict.py path/to/xray.png --run final|baseline|unet|unetpp [--show] [--auto-crop]
+python scripts/predict.py path/to/xray.png --run final|baseline|unet|unetpp [--show] [--auto-crop] \
+    [--age N] [--bmi N] [--family-history yes|no]
 python scripts/preprocess_xray.py path/to/xray.png --out-dir outputs/preprocessed
 python scripts/measure_jsw.py --out data/jsw_features.csv
 python scripts/train_hybrid2.py --seed 42|7
@@ -302,16 +305,43 @@ python scripts/predict.py                              # file-browser mode, repe
 python scripts/predict.py path/to/xray.png --show       # single file, pop-up window
 python scripts/predict.py path/to/xray.png --auto-crop  # arbitrary/uncropped input, crops first
 python scripts/predict.py path/to/xray.png --age 65 --bmi 32   # see note below
-(--age/--bmi are accepted but currently inert: Hybrid 2 never beat kl_final on val (0.8170 vs
-0.8416), so kl_final is used regardless and a note explains why - this is intentional, not a
-bug, and documented in HYBRID2_BEAT_FINAL at the top of predict.py. --sex is accepted for
-forward-compatibility only; no model uses it, since no sex column exists in the dataset.
-For --run final (the default), the result window/figure has 4 panels: input X-ray, Grad-CAM
-overlay, JSW edges with medial/lateral (or left/right if side can't be inferred) min values,
-and the probability bar chart. The terminal also prints a one-line causal-finding summary
-(Phase 5) with its caveat. `--run baseline|unet|unetpp` keep the original 2-panel layout
-(input + bar chart only) - Grad-CAM/JSW are specific to the CORAL-head final model for now.
+(--age/--bmi are accepted but currently inert *for model choice*: Hybrid 2 never beat kl_final
+on val (0.8170 vs 0.8416), so kl_final is used regardless and a note explains why - this is
+intentional, not a bug, and documented in HYBRID2_BEAT_FINAL at the top of predict.py. --sex is
+accepted for forward-compatibility only; no model uses it, since no sex column exists in the
+dataset. For --run final (the default), the result window/figure has 4 panels: input X-ray,
+Grad-CAM overlay, JSW edges with medial/lateral (or left/right if side can't be inferred) min
+values, and the probability bar chart. `--run baseline|unet|unetpp` keep the original 2-panel
+layout (input + bar chart only) - Grad-CAM/JSW are specific to the CORAL-head final model for now.
 **A web app is deferred to a later stage** - this terminal demo is the interface for now.
+
+### Causal risk panel (added 2026-10-21) - predict.py asks for age/BMI/family history
+After an image is chosen (file-browser or single-file mode), predict.py asks in the terminal for
+patient age, BMI, and family history of knee replacement (yes/no); press Enter to skip any of
+them. `--age`, `--bmi`, `--family-history yes|no` skip their prompt (useful for scripting/non-
+interactive runs - EOF on stdin is also treated as "skip", so it degrades gracefully without a
+terminal attached). **These values never reach the classifier** - the predicted KL grade always
+comes from the image alone via `kl_final` (or whichever `--run`); they only feed a causal risk
+panel, appended as one more panel on every result figure (3 panels total for `--run
+baseline|unet|unetpp`, 5 for the default `--run final`) and printed in the terminal:
+```
+python scripts/predict.py path/to/xray.png --age 65 --bmi 33 --family-history yes   # obese
+python scripts/predict.py path/to/xray.png --age 55 --bmi 24 --family-history no    # not obese
+python scripts/predict.py path/to/xray.png                                          # prompts; Enter to skip all
+```
+- Always shown: Phase 5's population finding (obesity -> +0.48 to +0.58 KL grade points, linear
+  regression / propensity score matching) and the caveat ("Population-level estimate from OAI
+  data under the causal model's assumptions; not a diagnosis or individual prediction.").
+- If age **and** BMI are both given: states whether BMI>=30 (obese), and shows the expected KL
+  grade at this patient's age/family history with vs. without obesity, from the fitted
+  regression-adjustment model (`scripts/causal_model.py`, same spec and same one-knee-per-patient
+  seed-42 sample as `run_causal.py`'s `backdoor.linear_regression` estimate - its obesity
+  coefficient reproduces Phase 5's +0.485 ATE). Coefficients are cached at
+  `outputs/results/causal/kl_regression_coefs.json` on first use (refit from
+  `data/clinical_features.csv` if that file is missing) and reused after that.
+- If family history is skipped but age/BMI are given: uses the population's most common value
+  (no, in this dataset) for the patient-specific estimate and says so.
+- If age or BMI is skipped: shows only the population finding, no patient-specific estimate.
 
 ## Current status
 **All planned phases are done.** Dataset cleanup; Python 3.12 venv with PyTorch+CUDA; CGMH

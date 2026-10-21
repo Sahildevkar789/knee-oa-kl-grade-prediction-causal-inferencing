@@ -1,0 +1,9 @@
+{
+  "intercept": -0.46606990478725446,
+  "age_coef": 0.024607799790087953,
+  "famkr_coef": 0.13437284437046443,
+  "obese_coef": 0.48419347916676064,
+  "most_common_famkr": 0,
+  "n": 4071,
+  "source": "refit by causal_model.py - same spec and same one-knee-per-patient (seed 42) sample as run_causal.py's backdoor.linear_regression estimate"
+}
