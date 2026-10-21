@@ -40,6 +40,12 @@ HYBRID2_TAB_STD = np.array([9.24, 4.88], dtype=np.float32)
 CAUSAL_CAVEAT = ("Population-level estimate from OAI data under the causal model's assumptions; "
                  "not a diagnosis or individual prediction.")
 
+# Hides the Grad-CAM/JSW panels and terminal lines for now, per request (2026-10-22) - keeps
+# the result output to input X-ray + probability bar + causal risk panel. Grad-CAM is still
+# computed internally (classify_rgb always does it for --run final) in case this is flipped
+# back to True later; only display is skipped.
+SHOW_XAI_PANELS = False
+
 
 def to_tensor(rgb, size, device):
     x = (cv2.resize(rgb, (size, size)) / 255.0 - np.array(MEAN)) / np.array(STD)
@@ -69,7 +75,7 @@ def prompt_optional(prompt_text, parse=float):
     """Asks in the terminal, returns None on a blank/unparseable answer (the skip path) or on
     EOF (so this also behaves when stdin isn't interactive, e.g. automated testing)."""
     try:
-        raw = input(f"{prompt_text} (press Enter to skip): ").strip()
+        raw = input(f"{prompt_text}: ").strip()
     except EOFError:
         raw = ""
     if not raw:
@@ -84,13 +90,17 @@ def prompt_optional(prompt_text, parse=float):
 def get_patient_inputs(args):
     """Age/BMI/family-history for the causal risk panel only - never fed to the classifier
     (the predicted KL grade always comes from the image alone). Values given via --age/--bmi/
-    --family-history skip their prompt; everything else is asked for, Enter to skip."""
-    age = args.age if args.age is not None else prompt_optional("Patient age")
-    bmi = args.bmi if args.bmi is not None else prompt_optional("Patient BMI")
+    --family-history skip their prompt; everything else is asked for, Enter to skip. Prints one
+    header line before any prompt, and skips the header entirely if all three were given on the
+    command line (nothing left to ask)."""
+    if args.age is None or args.bmi is None or args.family_history is None:
+        print("Enter patient details (press Enter to skip):")
+    age = args.age if args.age is not None else prompt_optional("  Age")
+    bmi = args.bmi if args.bmi is not None else prompt_optional("  BMI")
     if args.family_history is not None:
         famkr = {"yes": 1, "no": 0}[args.family_history]
     else:
-        famkr = prompt_optional("Family history of knee replacement? (yes/no)", parse=str)
+        famkr = prompt_optional("  Family history of knee replacement (y/n)", parse=str)
         if famkr is not None:
             famkr = {"y": 1, "yes": 1, "1": 1, "n": 0, "no": 0, "0": 0}.get(famkr.strip().lower())
             if famkr is None:
@@ -203,18 +213,20 @@ def predict_image_auto_crop(image_path, crop_seg_model, seg_model, classifier, r
 
 def report(image_path, img, grade, probs, out_dir, plt, cam=None, side=None,
           age=None, bmi=None, famkr=None, causal_coefs=None):
-    """Prints the prediction and builds + saves the result figure. With cam given (final/hybrid2
-    runs), shows input/Grad-CAM/JSW/probabilities (4 panels); otherwise input/probabilities (2).
-    Either way, one more panel is appended: the causal risk panel (Phase 5's population finding,
-    plus a patient-specific estimate if age/bmi were given). age/bmi/famkr are for this panel
-    only - the predicted grade above always comes from the image alone."""
+    """Prints the prediction and builds + saves the result figure. With cam given AND
+    SHOW_XAI_PANELS on, shows input/Grad-CAM/JSW/probabilities (4 panels); otherwise just
+    input/probabilities (2). Either way, one more panel is appended: the causal risk panel
+    (Phase 5's population finding, plus a patient-specific estimate if age/bmi were given).
+    age/bmi/famkr are for this panel only - the predicted grade above always comes from the
+    image alone."""
+    show_xai = cam is not None and SHOW_XAI_PANELS
     print(f"\nImage: {image_path}")
     print(f"Predicted KL grade: {grade} - {KL_TEXT[grade]} ({probs[grade] * 100:.1f}% confidence)")
     for g in range(5):
         print(f"  KL{g}: {probs[g] * 100:5.1f}%")
 
     jsw = None
-    if cam is not None:
+    if show_xai:
         jsw = measure_jsw_array(img)
         comp = assign_compartments(side, jsw) if side else {
             "medial_min_jsw": None, "lateral_min_jsw": None, "compartment_label": "unknown"}
@@ -230,11 +242,11 @@ def report(image_path, img, grade, probs, out_dir, plt, cam=None, side=None,
     for line in causal_lines:
         print(f"  {line}")
 
-    n_panels = 3 if cam is None else 5
+    n_panels = 3 if not show_xai else 5
     fig, axes = plt.subplots(1, n_panels, figsize=(5.5 * n_panels, 5))
     axes[0].imshow(img); axes[0].set_title("Input X-ray"); axes[0].axis("off")
 
-    if cam is None:
+    if not show_xai:
         prob_ax = axes[1]
         causal_ax = axes[2]
     else:

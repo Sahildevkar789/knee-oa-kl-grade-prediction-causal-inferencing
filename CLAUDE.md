@@ -300,7 +300,7 @@ python scripts/evaluate_hybrid2.py --ckpt-name kl_hybrid2 --split val|test
 python scripts/bootstrap_compare.py <preds_a.csv> <preds_b.csv> <label_a> <label_b> <out.csv>
 (all new flags default to the original behavior; `--run final` is predict.py's new default)
 
-### Terminal demo (Phase 6) - predict.py now shows Grad-CAM + JSW, not just the probability bar
+### Terminal demo (Phase 6) - predict.py
 python scripts/predict.py                              # file-browser mode, repeats until Cancel
 python scripts/predict.py path/to/xray.png --show       # single file, pop-up window
 python scripts/predict.py path/to/xray.png --auto-crop  # arbitrary/uncropped input, crops first
@@ -309,26 +309,54 @@ python scripts/predict.py path/to/xray.png --age 65 --bmi 32   # see note below
 on val (0.8170 vs 0.8416), so kl_final is used regardless and a note explains why - this is
 intentional, not a bug, and documented in HYBRID2_BEAT_FINAL at the top of predict.py. --sex is
 accepted for forward-compatibility only; no model uses it, since no sex column exists in the
-dataset. For --run final (the default), the result window/figure has 4 panels: input X-ray,
-Grad-CAM overlay, JSW edges with medial/lateral (or left/right if side can't be inferred) min
-values, and the probability bar chart. `--run baseline|unet|unetpp` keep the original 2-panel
-layout (input + bar chart only) - Grad-CAM/JSW are specific to the CORAL-head final model for now.
-**A web app is deferred to a later stage** - this terminal demo is the interface for now.
+dataset. The result window/figure has 3 panels: input X-ray, probability bar chart, causal risk
+panel (see below). **Grad-CAM and JSW are hidden for now** (`SHOW_XAI_PANELS = False` at the top
+of predict.py) - Grad-CAM is still computed internally for `--run final`, just not displayed or
+printed; flip that constant back to `True` to restore the old 5-panel layout (input/Grad-CAM/
+JSW/bar/causal) for `--run final`. **A web app is deferred to a later stage** - this terminal
+demo is the interface for now.
 
-### Causal risk panel (added 2026-10-21) - predict.py asks for age/BMI/family history
-After an image is chosen (file-browser or single-file mode), predict.py asks in the terminal for
-patient age, BMI, and family history of knee replacement (yes/no); press Enter to skip any of
-them. `--age`, `--bmi`, `--family-history yes|no` skip their prompt (useful for scripting/non-
-interactive runs - EOF on stdin is also treated as "skip", so it degrades gracefully without a
-terminal attached). **These values never reach the classifier** - the predicted KL grade always
-comes from the image alone via `kl_final` (or whichever `--run`); they only feed a causal risk
-panel, appended as one more panel on every result figure (3 panels total for `--run
-baseline|unet|unetpp`, 5 for the default `--run final`) and printed in the terminal:
+### Causal risk panel (added 2026-10-21, prompt UX fixed 2026-10-22) - asks for age/BMI/family history
+After an image is chosen (file-browser or single-file mode), predict.py prints "Enter patient
+details (press Enter to skip):" then asks for age, BMI, and family history of knee replacement
+(y/n) - press Enter to skip any of them. `--age`, `--bmi`, `--family-history yes|no` skip their
+prompt individually (useful for scripting/non-interactive runs - EOF on stdin is also treated as
+"skip", so it degrades gracefully without a terminal attached; if all three are given on the
+command line, the header/prompts are skipped entirely). **These values never reach the
+classifier** - the predicted KL grade always comes from the image alone via `kl_final` (or
+whichever `--run`); they only feed the causal risk panel, appended as one more panel on every
+result figure and printed in the terminal:
 ```
 python scripts/predict.py path/to/xray.png --age 65 --bmi 33 --family-history yes   # obese
 python scripts/predict.py path/to/xray.png --age 55 --bmi 24 --family-history no    # not obese
 python scripts/predict.py path/to/xray.png                                          # prompts; Enter to skip all
 ```
+Example terminal output for the prompted (nothing given on the command line) case:
+```
+Enter patient details (press Enter to skip):
+  Age: 65
+  BMI: 33
+  Family history of knee replacement (y/n): y
+
+Image: path/to/xray.png
+Predicted KL grade: 2 - Minimal (67.3% confidence)
+  KL0:  13.1%
+  KL1:  19.5%
+  KL2:  67.3%
+  KL3:   0.0%
+  KL4:   0.0%
+
+  Causal risk panel (Phase 5 finding - population-level, not derived from this image):
+  Obesity (BMI>=30) -> KL grade, adjusting for age + family history of knee replacement:
+    Population ATE: +0.48 to +0.58 KL grade points (linear regression / propensity score matching).
+    This patient: age 65, BMI 33.0 -> obese (BMI>=30 threshold).
+    Fitted model at this age/family history: expected KL grade 1.27 if not obese vs 1.75 if obese (+0.48).
+    Caveat: Population-level estimate from OAI data under the causal model's assumptions; not a diagnosis or individual prediction.
+Saved result image to outputs/predictions/xray_prediction.png
+```
+If run through this assistant's sandboxed terminal (no real console attached), the prompts
+auto-skip on EOF instantly instead of waiting - that's a property of that sandbox, not of
+predict.py; run it in your own terminal to actually be prompted and type an answer.
 - Always shown: Phase 5's population finding (obesity -> +0.48 to +0.58 KL grade points, linear
   regression / propensity score matching) and the caveat ("Population-level estimate from OAI
   data under the causal model's assumptions; not a diagnosis or individual prediction.").
