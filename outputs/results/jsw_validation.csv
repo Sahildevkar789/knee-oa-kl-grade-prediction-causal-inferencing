@@ -1,0 +1,5 @@
+Feature,vs_JSN_col,rho_vs_JSN,p_vs_JSN,rho_vs_KL,p_vs_KL
+medial_min_jsw,jsn_medial,-0.1792,0.0,-0.1977,0.0
+medial_mean_jsw,jsn_medial,-0.1782,0.0,-0.1839,0.0
+lateral_min_jsw,jsn_lateral,-0.1455,0.0,-0.2033,0.0
+lateral_mean_jsw,jsn_lateral,-0.1606,0.0,-0.161,0.0

@@ -1,0 +1,3 @@
+validated=False
+medial_min_rho=-0.1792
+convention_correct=True
