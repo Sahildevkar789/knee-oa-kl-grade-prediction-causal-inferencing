@@ -250,6 +250,41 @@ could all plausibly affect both obesity risk and OA severity independently of wh
 here. The effect size should be read as "what the data show under this specific, limited
 adjustment set," not as a definitive causal magnitude.
 
+## Phase 6: Terminal demo
+Extended `scripts/predict.py` rather than building an app, per the brief. Moved `grad_cam`
+into `kl_common.py` (shared with Phase 4's `run_xai.py`) and refactored
+`measure_jsw.py`'s `measure_jsw(path)` into a thin wrapper over a new `measure_jsw_array(rgb)`
+so predict.py can run JSW on in-memory images (including auto-cropped sub-images that have no
+file path) - verified byte-identical output through both entry points before relying on it.
+
+For `--run final` (the default), `report()` now builds a 4-panel figure (input / Grad-CAM /
+JSW edges with medial-lateral or left-right values / probability bar) instead of 2, and prints
+JSW values plus a one-line causal-finding summary (Phase 5's result, with its caveat) to the
+terminal. `--run baseline|unet|unetpp` keep the original 2-panel layout unchanged - Grad-CAM's
+shared implementation assumes a CORAL head and a single-input forward pass, which those three
+models don't have (CE 5-way softmax, and unet/unetpp also take a concatenated mask channel) -
+regression-tested and confirmed byte-identical to pre-Phase-6 predictions (same 99.0%/99.8%
+KL4 confidence on the same test image as every prior check in this project).
+
+`--age`/`--bmi`/`--sex` added as specified ("switch to Hybrid 2 if it beat kl_final on val").
+Per Phase 3's result (Hybrid 2 mean val QWK 0.8170 < kl_final's 0.8416), that condition is
+always false, so kl_final is used regardless - implemented as a real conditional check
+(`HYBRID2_BEAT_FINAL = False`, documented inline) rather than silently dropping the flags, and
+the tool prints a note explaining why when they're passed. `--sex` is accepted but inert (no
+model uses it - no sex data exists, per Phase 3). Grad-CAM is not wired up for Hybrid 2 even
+in the hypothetical case it had won, since its two-input `forward(img, tab)` doesn't match the
+shared single-input `grad_cam()` helper's assumption - noted in code as a known gap, not
+silently broken, since the dead code path was never going to execute with the actual results.
+
+Tested on 5 test images (one per grade), non-interactively (`--show` off), confirmed against
+the same images used throughout this project: KL0 (94.2%, correct), KL1 (89.4% for KL0 -
+wrong, same known adjacent-grade confusion seen all along), KL2 (50.3% for KL0 - wrong, low
+confidence), KL3 (99.3%, correct), KL4 (99.6%, correct) - all figures saved to
+`outputs/predictions/`. Also tested `--auto-crop` combined with `--run final` (works, side
+correctly falls back to "unknown/left-right" for a non-OAI-filename image) and `--age`/`--bmi`
+(correctly prints the explanatory note and still uses kl_final). CLAUDE.md updated with the
+demo commands and a note that a web app is deferred to a later stage.
+
 ## Phase 1: Hybrid 1 (CNN + Transformer)
 Added `--head {mlp,transformer}` to train_classifier.py/kl_common.py (default mlp = unchanged
 behavior). `transformer` builds `ConvNeXtCBAMTransformer`: ConvNeXt-Tiny+CBAM feature map

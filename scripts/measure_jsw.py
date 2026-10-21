@@ -77,12 +77,19 @@ def column_jsw(gray, col, joint_row, threshold, max_scan, search_radius):
 
 
 def measure_jsw(image_path):
-    """Returns a dict of raw (pixel) and normalized min/mean JSW for the left/right halves of
-    the joint (medial/lateral assignment is done by the caller, which knows the knee side)."""
+    """Loads an image from disk and measures JSW on it - see measure_jsw_array for the core logic."""
     img = cv2.imread(image_path, cv2.IMREAD_COLOR)
     if img is None:
         raise ValueError(f"Could not read {image_path}")
     rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+    return measure_jsw_array(rgb)
+
+
+def measure_jsw_array(rgb):
+    """Returns a dict of raw (pixel) and normalized min/mean JSW for the left/right halves of
+    the joint (medial/lateral assignment is done by the caller, which knows the knee side).
+    rgb: an already-loaded RGB uint8 array (e.g. from predict.py's in-memory auto-crop output,
+    which has no file path to re-read from)."""
     clahe_rgb = apply_clahe(rgb)
     gray = cv2.cvtColor(clahe_rgb, cv2.COLOR_RGB2GRAY)
 

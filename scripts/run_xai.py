@@ -23,7 +23,7 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
-from kl_common import build_classifier, build_hybrid1, apply_clahe, get_transforms, GRADES, KL_TEXT
+from kl_common import build_classifier, build_hybrid1, apply_clahe, get_transforms, GRADES, KL_TEXT, grad_cam
 from measure_jsw import find_joint_row
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -37,25 +37,6 @@ def load_image(path):
     clahe_img = apply_clahe(img)
     x = eval_tf(image=clahe_img)["image"].unsqueeze(0).to(device)
     return img, x
-
-
-def grad_cam(model, x, feature_module):
-    """Returns a (7,7) Grad-CAM heatmap, normalized to [0,1], using sum-of-CORAL-logits as target."""
-    activations, gradients = {}, {}
-    def fwd(_, __, out): activations["v"] = out
-    def bwd(_, grad_in, grad_out): gradients["v"] = grad_out[0]
-    h1 = feature_module.register_forward_hook(fwd)
-    h2 = feature_module.register_full_backward_hook(bwd)
-    model.zero_grad()
-    logits = model(x)
-    target = logits.sum()
-    target.backward()
-    h1.remove(); h2.remove()
-    acts, grads = activations["v"], gradients["v"]
-    weights = grads.mean(dim=(2, 3), keepdim=True)
-    cam = F.relu((weights * acts).sum(dim=1)).squeeze().detach().cpu().numpy()
-    cam = cam / (cam.max() + 1e-8)
-    return cam, torch.sigmoid(logits.detach()).squeeze().cpu().numpy()
 
 
 def cam_mass_in_band(cam, img_shape, joint_row, band_frac=0.15):

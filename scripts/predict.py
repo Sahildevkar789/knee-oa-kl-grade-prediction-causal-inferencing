@@ -6,6 +6,10 @@ Run without an image path to pick files with a file browser (repeats until you p
 
 Or give a path directly:
     python scripts/predict.py path/to/xray.png --show
+
+Pass --age/--bmi to additionally use Hybrid 2's tabular branch - though per Phase 3's results
+(val QWK 0.8170 vs kl_final's 0.8416), Hybrid 2 never actually wins, so kl_final is used
+either way and a note explains why (see HYBRID2_BEAT_FINAL below).
 """
 import os
 import argparse
@@ -15,11 +19,28 @@ import torch
 import torch.nn.functional as F
 import matplotlib
 
-from kl_common import (build_classifier, load_seg_model, apply_clahe, coral_probs_to_grade,
-                       MEAN, STD, IMG_SIZE, SEG_SIZE, KL_TEXT)
+from kl_common import (build_classifier, build_hybrid2, load_seg_model, apply_clahe, coral_probs_to_grade,
+                       grad_cam, MEAN, STD, IMG_SIZE, SEG_SIZE, KL_TEXT)
 from preprocess_xray import prepare_xray
+from measure_jsw import measure_jsw_array, assign_compartments
 
 RUNS = ["final", "baseline", "unet", "unetpp"]
+
+# Phase 3's result: Hybrid 2's 2-seed mean val QWK (0.8170) never beat kl_final's (0.8416).
+# --age/--bmi are still accepted (the brief asks for this switch logic to exist), but since
+# the condition is false, kl_final is used regardless - this constant documents why, rather
+# than silently ignoring the flags.
+HYBRID2_BEAT_FINAL = False
+HYBRID2_TABULAR_COLS = ["V00AGE", "P01BMI"]   # sex omitted - no sex column exists in the dataset (see Phase 3 log)
+HYBRID2_TAB_MEAN = np.array([61.0, 28.58], dtype=np.float32)   # training-set stats, from Phase 3's log
+HYBRID2_TAB_STD = np.array([9.24, 4.88], dtype=np.float32)
+
+CAUSAL_SUMMARY = (
+    "Causal note (Phase 5, not from this image): under a simple DAG adjusting for age and "
+    "family history only, obesity (BMI>=30) is associated with roughly +0.48 to +0.58 higher "
+    "KL grade points on average - but unmeasured factors (activity level, prior injury, "
+    "occupation) could still confound this, so treat it as suggestive, not definitive."
+)
 
 
 def to_tensor(rgb, size, device):
@@ -36,9 +57,23 @@ def coral_display_probs(thresh_probs):
     return p / p.sum()
 
 
-def load_models(run, ckpt_dir, device):
+def infer_side(path):
+    """Best-effort knee side from a dataset-style filename (...L.png / ...R.png); None if unclear."""
+    stem = os.path.splitext(os.path.basename(path))[0]
+    if stem.endswith("L"):
+        return "L"
+    if stem.endswith("R"):
+        return "R"
+    return None
+
+
+def load_models(run, ckpt_dir, device, use_hybrid2=False):
     """Loads the segmentation model (only needed for the unet/unetpp mask channel) and the classifier once."""
-    if run == "final":
+    if use_hybrid2:
+        seg_model = None
+        classifier = build_hybrid2(ckpt_dir, device, tabular_dim=len(HYBRID2_TABULAR_COLS), init_from=None)
+        classifier.load_state_dict(torch.load(os.path.join(ckpt_dir, "kl_hybrid2_best.pt"), map_location=device))
+    elif run == "final":
         seg_model = None
         classifier = build_classifier("convnext_tiny", 3, pretrained=False, out_dim=4, attention="cbam").to(device)
         classifier.load_state_dict(torch.load(os.path.join(ckpt_dir, "kl_final_best.pt"), map_location=device))
@@ -50,57 +85,113 @@ def load_models(run, ckpt_dir, device):
     return seg_model, classifier
 
 
-def classify_rgb(img, seg_model, classifier, run, device):
-    """Classifies an already-loaded RGB image. Returns (predicted grade, 5-length display probabilities)."""
-    if run == "final":
+def classify_rgb(img, seg_model, classifier, run, device, tab=None):
+    """Classifies an already-loaded RGB image. Returns (predicted grade, 5-length display probabilities,
+    cam_or_None). cam is only computed for the final/hybrid2 (CORAL, single/paired-input) models."""
+    uses_coral = run == "final" or tab is not None
+    if uses_coral:
         img = apply_clahe(img)
-    with torch.no_grad():
-        x = to_tensor(img, IMG_SIZE, device)
-        if run in ("unet", "unetpp"):
+    x = to_tensor(img, IMG_SIZE, device)
+
+    if tab is not None:
+        tab_t = torch.tensor(tab, dtype=torch.float32).unsqueeze(0).to(device)
+        with torch.no_grad():
+            logits = classifier(x, tab_t)
+        cam = None   # Grad-CAM not wired up for the two-input fusion model's forward signature
+    elif run in ("unet", "unetpp"):
+        with torch.no_grad():
             prob_map = torch.sigmoid(seg_model(F.interpolate(x, size=(SEG_SIZE, SEG_SIZE), mode="bilinear", align_corners=False)))
-            x = torch.cat([x, F.interpolate(prob_map, size=(IMG_SIZE, IMG_SIZE), mode="bilinear", align_corners=False)], dim=1)
-        logits = classifier(x)
-        if run == "final":
-            thresh_probs = torch.sigmoid(logits).squeeze().cpu().numpy()
-            grade = int(coral_probs_to_grade(torch.sigmoid(logits)).item())
-            probs = coral_display_probs(thresh_probs)
-        else:
-            probs = torch.softmax(logits, dim=1).squeeze().cpu().numpy()
-            grade = int(probs.argmax())
-    return grade, probs
+            x_masked = torch.cat([x, F.interpolate(prob_map, size=(IMG_SIZE, IMG_SIZE), mode="bilinear", align_corners=False)], dim=1)
+            logits = classifier(x_masked)
+        cam = None
+    elif run == "final":
+        cam, _ = grad_cam(classifier, x, classifier.features)
+        with torch.no_grad():
+            logits = classifier(x)
+    else:
+        with torch.no_grad():
+            logits = classifier(x)
+        cam = None
+
+    if uses_coral:
+        probs_t = torch.sigmoid(logits.detach())
+        thresh_probs = probs_t.squeeze().cpu().numpy()
+        grade = int(coral_probs_to_grade(probs_t).item())
+        probs = coral_display_probs(thresh_probs)
+    else:
+        probs = torch.softmax(logits.detach(), dim=1).squeeze().cpu().numpy()
+        grade = int(probs.argmax())
+    return grade, probs, cam
 
 
-def predict_image(image_path, seg_model, classifier, run, device):
-    """Loads an image from disk and returns it (RGB), the predicted grade, and display probabilities."""
+def predict_image(image_path, seg_model, classifier, run, device, tab=None):
+    """Loads an image from disk and returns it (RGB), the predicted grade, display probabilities, and CAM."""
     img = cv2.imread(image_path, cv2.IMREAD_COLOR)
     if img is None:
         raise ValueError(f"Could not read {image_path}. Use a PNG or JPG file.")
     img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
-    grade, probs = classify_rgb(img, seg_model, classifier, run, device)
-    return img, grade, probs
+    grade, probs, cam = classify_rgb(img, seg_model, classifier, run, device, tab=tab)
+    return img, grade, probs, cam
 
 
-def predict_image_auto_crop(image_path, crop_seg_model, seg_model, classifier, run, device):
-    """Auto-crops (bilateral-aware) then classifies each knee. Returns a list of (label, crop_rgb, grade, probs)."""
+def predict_image_auto_crop(image_path, crop_seg_model, seg_model, classifier, run, device, tab=None):
+    """Auto-crops (bilateral-aware) then classifies each knee. Returns a list of (label, crop_rgb, grade, probs, cam)."""
     crops = prepare_xray(image_path, crop_seg_model, device)
-    return [(label, crop, *classify_rgb(crop, seg_model, classifier, run, device)) for label, crop in crops]
+    return [(label, crop, *classify_rgb(crop, seg_model, classifier, run, device, tab=tab)) for label, crop in crops]
 
 
-def report(image_path, img, grade, probs, out_dir, plt):
-    """Prints the prediction and builds + saves the result figure."""
+def report(image_path, img, grade, probs, out_dir, plt, cam=None, side=None):
+    """Prints the prediction and builds + saves the result figure. With cam given (final/hybrid2
+    runs), shows 4 panels: input, Grad-CAM, JSW edges, probabilities. Otherwise the original 2."""
     print(f"\nImage: {image_path}")
     print(f"Predicted KL grade: {grade} - {KL_TEXT[grade]} ({probs[grade] * 100:.1f}% confidence)")
     for g in range(5):
         print(f"  KL{g}: {probs[g] * 100:5.1f}%")
 
-    fig, axes = plt.subplots(1, 2, figsize=(11, 5))
+    jsw = None
+    if cam is not None:
+        jsw = measure_jsw_array(img)
+        comp = assign_compartments(side, jsw) if side else {
+            "medial_min_jsw": None, "lateral_min_jsw": None, "compartment_label": "unknown"}
+        if comp["medial_min_jsw"] is not None:
+            print(f"  JSW (normalized by joint width) - medial min: {comp['medial_min_jsw']:.3f}, "
+                 f"lateral min: {comp['lateral_min_jsw']:.3f}")
+        else:
+            print(f"  JSW (side unknown - labeled left/right of image) - left min: {jsw['left_min_jsw']:.3f}, "
+                 f"right min: {jsw['right_min_jsw']:.3f}")
+        print(f"  {CAUSAL_SUMMARY}")
+
+    if cam is None:
+        fig, axes = plt.subplots(1, 2, figsize=(11, 5))
+        axes[0].imshow(img); axes[0].set_title("Input X-ray"); axes[0].axis("off")
+        prob_ax = axes[1]
+    else:
+        fig, axes = plt.subplots(1, 4, figsize=(20, 5))
+        axes[0].imshow(img); axes[0].set_title("Input X-ray"); axes[0].axis("off")
+
+        cam_up = cv2.resize(cam, (img.shape[1], img.shape[0]))
+        axes[1].imshow(img, cmap="gray"); axes[1].imshow(cam_up, cmap="jet", alpha=0.45)
+        axes[1].set_title("Grad-CAM"); axes[1].axis("off")
+
+        axes[2].imshow(img)
+        axes[2].axhline(jsw["joint_row"], color="yellow", linestyle="--", linewidth=1, alpha=0.7)
+        for c in jsw["left_cols"][::3]:
+            axes[2].plot(c, jsw["joint_row"], ".", color="lime", markersize=2)
+        for c in jsw["right_cols"][::3]:
+            axes[2].plot(c, jsw["joint_row"], ".", color="orange", markersize=2)
+        if comp["medial_min_jsw"] is not None:
+            jsw_label = f"medial min={comp['medial_min_jsw']:.3f}  lateral min={comp['lateral_min_jsw']:.3f}"
+        else:
+            jsw_label = f"left min={jsw['left_min_jsw']:.3f}  right min={jsw['right_min_jsw']:.3f} (side unknown)"
+        axes[2].set_title(f"JSW\n{jsw_label}", fontsize=10); axes[2].axis("off")
+        prob_ax = axes[3]
+
     fig.canvas.manager.set_window_title(f"KL grade prediction - {os.path.basename(image_path)}")
-    axes[0].imshow(img); axes[0].set_title("Input X-ray"); axes[0].axis("off")
     colors = ["#888888"] * 5
     colors[grade] = "#D85A30"
-    axes[1].bar([f"KL{g}" for g in range(5)], probs * 100, color=colors)
-    axes[1].set_ylabel("Probability (%)"); axes[1].set_ylim(0, 100)
-    axes[1].set_title(f"Predicted: KL{grade} ({KL_TEXT[grade]})")
+    prob_ax.bar([f"KL{g}" for g in range(5)], probs * 100, color=colors)
+    prob_ax.set_ylabel("Probability (%)"); prob_ax.set_ylim(0, 100)
+    prob_ax.set_title(f"Predicted: KL{grade} ({KL_TEXT[grade]})")
     plt.tight_layout()
 
     os.makedirs(out_dir, exist_ok=True)
@@ -130,6 +221,9 @@ def main():
     ap.add_argument("image", nargs="?", help="Path to a knee X-ray. Leave out to choose with a file browser.")
     ap.add_argument("--run", choices=RUNS, default="final",
                     help="Which trained classifier to use (final = the locked ConvNeXt-tiny+CLAHE+CBAM+CORAL model)")
+    ap.add_argument("--age", type=float, default=None, help="Patient age - with --bmi, considers Hybrid 2 (see module docstring)")
+    ap.add_argument("--bmi", type=float, default=None, help="Patient BMI - with --age, considers Hybrid 2")
+    ap.add_argument("--sex", choices=["M", "F"], default=None, help="Accepted for forward-compatibility; not used by any current model (no sex data available)")
     ap.add_argument("--ckpt-dir", default="outputs/checkpoints")
     ap.add_argument("--out-dir", default="outputs/predictions")
     ap.add_argument("--show", action="store_true", help="Open the result window (always on in file-browser mode)")
@@ -143,22 +237,31 @@ def main():
         matplotlib.use("Agg")   # save to file only, no pop-up window
     import matplotlib.pyplot as plt
 
+    use_hybrid2 = args.age is not None and args.bmi is not None and HYBRID2_BEAT_FINAL
+    if args.age is not None and args.bmi is not None and not HYBRID2_BEAT_FINAL:
+        print("Note: --age/--bmi given, but Hybrid 2 didn't beat kl_final on validation "
+             f"(0.8170 vs 0.8416) - using kl_final (--run {args.run}) regardless.")
+    tab = None
+    if use_hybrid2:
+        tab = (np.array([args.age, args.bmi], dtype=np.float32) - HYBRID2_TAB_MEAN) / HYBRID2_TAB_STD
+
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    print(f"Loading models ({args.run}) on {device}...")
-    seg_model, classifier = load_models(args.run, args.ckpt_dir, device)
+    print(f"Loading models ({'hybrid2' if use_hybrid2 else args.run}) on {device}...")
+    seg_model, classifier = load_models(args.run, args.ckpt_dir, device, use_hybrid2=use_hybrid2)
     crop_seg_model = load_seg_model("unetpp", args.ckpt_dir, device) if args.auto_crop else None
 
     def handle(path):
         if args.auto_crop:
-            for label, crop, grade, probs in predict_image_auto_crop(path, crop_seg_model, seg_model, classifier, args.run, device):
+            for label, crop, grade, probs, cam in predict_image_auto_crop(path, crop_seg_model, seg_model, classifier, args.run, device, tab=tab):
                 tag = f"{os.path.splitext(os.path.basename(path))[0]}_{label}"
-                report(tag, crop, grade, probs, args.out_dir, plt)
+                side = label if label in ("left", "right") else infer_side(path)
+                report(tag, crop, grade, probs, args.out_dir, plt, cam=cam, side=side)
                 if args.show or interactive:
                     plt.show()
                 plt.close("all")
         else:
-            img, grade, probs = predict_image(path, seg_model, classifier, args.run, device)
-            report(path, img, grade, probs, args.out_dir, plt)
+            img, grade, probs, cam = predict_image(path, seg_model, classifier, args.run, device, tab=tab)
+            report(path, img, grade, probs, args.out_dir, plt, cam=cam, side=infer_side(path))
             if args.show or interactive:
                 plt.show()
             plt.close("all")

@@ -215,6 +215,22 @@ python scripts/predict.py path/to/xray.png --run final|baseline|unet|unetpp [--s
 python scripts/preprocess_xray.py path/to/xray.png --out-dir outputs/preprocessed
 (all new flags default to the original behavior; `--run final` is predict.py's new default)
 
+### Terminal demo (Phase 6) - predict.py now shows Grad-CAM + JSW, not just the probability bar
+python scripts/predict.py                              # file-browser mode, repeats until Cancel
+python scripts/predict.py path/to/xray.png --show       # single file, pop-up window
+python scripts/predict.py path/to/xray.png --auto-crop  # arbitrary/uncropped input, crops first
+python scripts/predict.py path/to/xray.png --age 65 --bmi 32   # see note below
+(--age/--bmi are accepted but currently inert: Hybrid 2 never beat kl_final on val (0.8170 vs
+0.8416), so kl_final is used regardless and a note explains why - this is intentional, not a
+bug, and documented in HYBRID2_BEAT_FINAL at the top of predict.py. --sex is accepted for
+forward-compatibility only; no model uses it, since no sex column exists in the dataset.
+For --run final (the default), the result window/figure has 4 panels: input X-ray, Grad-CAM
+overlay, JSW edges with medial/lateral (or left/right if side can't be inferred) min values,
+and the probability bar chart. The terminal also prints a one-line causal-finding summary
+(Phase 5) with its caveat. `--run baseline|unet|unetpp` keep the original 2-panel layout
+(input + bar chart only) - Grad-CAM/JSW are specific to the CORAL-head final model for now.
+**A web app is deferred to a later stage** - this terminal demo is the interface for now.
+
 ## Current status
 Done: dataset cleanup; Python 3.12 venv with PyTorch+CUDA; CGMH segmentation (4 models,
 U-Net/U-Net++ selected); `preprocess_xray.py` for arbitrary-input auto-cropping; and the

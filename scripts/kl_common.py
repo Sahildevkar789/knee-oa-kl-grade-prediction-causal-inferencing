@@ -326,6 +326,27 @@ def coral_probs_to_grade(probs):
     return (probs > 0.5).sum(dim=1)
 
 
+def grad_cam(model, x, feature_module):
+    """Grad-CAM on a CORAL-head model. Target = sum of the 4 threshold logits (a monotonic
+    proxy for the predicted grade - there's no single softmax class score to backprop from).
+    Only valid for single-input models (model(x)); not for Hybrid 2's model(img, tab).
+    Returns (cam as a (7,7) array normalized to [0,1], raw sigmoid probs for the 4 thresholds)."""
+    activations, gradients = {}, {}
+    def fwd(_, __, out): activations["v"] = out
+    def bwd(_, grad_in, grad_out): gradients["v"] = grad_out[0]
+    h1 = feature_module.register_forward_hook(fwd)
+    h2 = feature_module.register_full_backward_hook(bwd)
+    model.zero_grad()
+    logits = model(x)
+    logits.sum().backward()
+    h1.remove(); h2.remove()
+    acts, grads = activations["v"], gradients["v"]
+    weights = grads.mean(dim=(2, 3), keepdim=True)
+    cam = F.relu((weights * acts).sum(dim=1)).squeeze().detach().cpu().numpy()
+    cam = cam / (cam.max() + 1e-8)
+    return cam, torch.sigmoid(logits.detach()).squeeze().cpu().numpy()
+
+
 def load_seg_model(kind, ckpt_dir, device):
     """Loads a trained U-Net or U-Net++ (from the Colab runs), frozen."""
     cls = smp.Unet if kind == "unet" else smp.UnetPlusPlus
