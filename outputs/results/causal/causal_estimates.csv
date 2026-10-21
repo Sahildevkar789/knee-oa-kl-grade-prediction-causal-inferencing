@@ -1,0 +1,7 @@
+Analysis,Outcome,N,Method,ATE
+primary_one_knee,KL_grade (0-4),4071,propensity_score_matching,0.5827
+primary_one_knee,KL_grade (0-4),4071,linear_regression,0.4851
+primary_one_knee,KL>=2 (binary OA),4071,propensity_score_matching,0.2461
+primary_one_knee,KL>=2 (binary OA),4071,linear_regression,0.1896
+sensitivity_both_knees,KL_grade (0-4),8142,propensity_score_matching,-0.0441
+sensitivity_both_knees,KL_grade (0-4),8142,linear_regression,0.5065

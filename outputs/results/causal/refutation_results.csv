@@ -1,0 +1,4 @@
+Refuter,New_effect,Original_effect,p_value
+placebo_treatment_refuter,0.0006,0.4851,0.96
+random_common_cause,0.4851,0.4851,0.94
+data_subset_refuter,0.4861,0.4851,1.0

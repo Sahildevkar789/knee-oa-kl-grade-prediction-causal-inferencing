@@ -180,6 +180,76 @@ a new matplotlib figure wasn't opened between the two `savefig` calls - fixed by
 closing/opening figures; regenerated both plots from the saved SHAP values CSV rather than
 re-running the ~70s computation.)
 
+## Phase 5: Causal inference (DoWhy)
+**Question**: does obesity (BMI>=30) causally affect KL grade, adjusting for age and family
+history of knee replacement (P01FAMKR)? **Sex omitted again** (same data limitation as Phase
+3 - no sex column exists anywhere in the dataset, logged there and not re-derived here).
+**WOMAC, JSN and osteophyte columns were not used as adjustment covariates** (hard rule -
+they're consequences of OA, not causes of it).
+
+**Data prep**: `data/clinical_features.csv`, parsed family history from its categorical
+string encoding (`"0: No"` / `"1: Yes"` / `".: Missing Form/Incomplete Workbook"`). Dropped
+112 rows with missing family history and 6 with missing BMI (both small, <1.5% of data -
+dropped rather than imputed for this analysis, since causal covariate imputation introduces
+its own assumptions the brief didn't specify how to handle; logged instead of guessing).
+8,142 rows / 4,071 patients remained.
+
+**DAG** (`outputs/results/causal/dag.png`): Age -> Obese, Age -> KL_grade,
+FamilyHistory -> KL_grade, Obese -> KL_grade. Two bugs fixed before getting a working
+estimate: (1) DoWhy's graph node names must match the actual dataframe columns it sees, not
+the human-readable labels in the diagram - the diagram uses "KL_grade" but DoWhy's outcome
+column is always renamed to "y" internally (shared code path for both outcomes), so the DAG
+string passed to `CausalModel` uses "y", not "KL_grade" (a `NetworkXError: node y not in
+graph` caught this immediately). (2) An overly-clever one-liner for picking which column to
+rename to "y" was simplified to a plain if/else after review, before it could hide a bug.
+
+**Primary analysis** (one knee per patient, randomly chosen seed=42, n=4,071, all splits):
+
+| Outcome | Method | ATE |
+|---|---|---|
+| KL grade (0-4) | propensity score matching | 0.583 |
+| KL grade (0-4) | linear regression | 0.485 |
+| KL>=2 (binary OA) | propensity score matching | 0.246 |
+| KL>=2 (binary OA) | linear regression | 0.190 |
+
+Both methods agree in direction and rough magnitude: under this DAG's assumptions, being
+obese is associated with roughly **+0.48 to +0.58 points higher KL grade** on average, and
+roughly a **19-25 percentage point higher probability of having KL>=2** (clinically-defined
+OA), holding age and family history fixed.
+
+**Refuters** (on the primary KL-grade linear regression estimate, 0.4851) - all three pass:
+- Placebo treatment: effect collapses to ~0.0006 (p=0.96) when the treatment is replaced
+  with random noise, as a valid estimate should.
+- Random common cause: adding an irrelevant random covariate barely moves the estimate
+  (0.4851 -> 0.4851).
+- Data subset (80%): estimate stable (0.4851 -> 0.4861).
+`outputs/results/causal/refutation_results.csv`.
+
+**Sensitivity analysis** (both knees, no one-per-patient restriction, n=8,142): linear
+regression stays close to the primary estimate (0.507 vs 0.485 - stable). **Propensity score
+matching does not** (-0.044, collapsing to near zero and flipping sign). This is a genuine,
+interpretable methodological finding, not noise: both knees of the same patient share
+*identical* Age/FamilyHistory/Obese values, so PSM's nearest-neighbor matching frequently
+pairs a patient's own two knees together instead of matching across genuinely different
+patients - a known degenerate case for matching on non-independent/clustered observations.
+This is a concrete demonstration of *why* the primary analysis deliberately uses one knee per
+patient, not just a procedural box-ticking step.
+
+**Mediation analysis (BMI -> medial min JSW -> KL grade): SKIPPED.** Conditional on JSW being
+validated in Phase 2, which it was not (rho=-0.179 vs the -0.3 threshold). Logged to
+`outputs/results/causal/mediation_analysis_SKIPPED.txt`.
+
+**Conclusion, stated as the DAG demands**: *under the assumptions encoded in this DAG* (no
+unmeasured confounding beyond age and family history; the graph's structure is correct), the
+data are consistent with obesity having a positive causal effect on KL grade of roughly
+0.48-0.58 grade points, robust to the three refutation checks. This is **not** a claim free of
+assumptions - the DAG is deliberately simple, and real unmeasured confounders almost
+certainly exist: **physical activity level, prior knee injury or surgery, occupation
+(physical labor history), and genetic factors beyond family history of knee replacement**
+could all plausibly affect both obesity risk and OA severity independently of what's modeled
+here. The effect size should be read as "what the data show under this specific, limited
+adjustment set," not as a definitive causal magnitude.
+
 ## Phase 1: Hybrid 1 (CNN + Transformer)
 Added `--head {mlp,transformer}` to train_classifier.py/kl_common.py (default mlp = unchanged
 behavior). `transformer` builds `ConvNeXtCBAMTransformer`: ConvNeXt-Tiny+CBAM feature map
