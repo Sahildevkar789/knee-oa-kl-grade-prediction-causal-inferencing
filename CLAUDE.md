@@ -47,8 +47,10 @@ interface is `predict.py`'s terminal demo (Grad-CAM + JSW panels, see Commands b
 - `scripts/measure_jsw.py` — intensity-based joint space width measurement.
 - `scripts/run_xai.py`, `scripts/run_shap_hybrid2.py`, `scripts/run_causal.py` — one-off
   analysis scripts for Phases 4/5, kept under `scripts/` for the record (not reusable CLIs).
-- `scripts/causal_model.py` — fits (or loads, from `outputs/results/causal/kl_regression_coefs.json`)
-  the linear regression behind `predict.py`'s causal risk panel; see Commands below.
+- `scripts/causal_model.py` — fits (or loads, from `outputs/results/causal/causal_query_models.json`)
+  the per-factor causal models (age total/direct/indirect-via-BMI, BMI, family history, obesity
+  by age group) behind `causal_query.py` and `predict.py`'s causal risk panel.
+- `scripts/causal_query.py` — interactive causal "what-if" tool; see Commands below.
 - `scripts/bootstrap_compare.py` — paired bootstrap significance test between any two
   `*_test_predictions.csv` files; reusable.
 
@@ -298,6 +300,7 @@ python scripts/measure_jsw.py --out data/jsw_features.csv
 python scripts/train_hybrid2.py --seed 42|7
 python scripts/evaluate_hybrid2.py --ckpt-name kl_hybrid2 --split val|test
 python scripts/bootstrap_compare.py <preds_a.csv> <preds_b.csv> <label_a> <label_b> <out.csv>
+python scripts/causal_query.py [--age N] [--bmi N] [--family-history yes|no] [--refit]
 (all new flags default to the original behavior; `--run final` is predict.py's new default)
 
 ### Terminal demo (Phase 6) - predict.py
@@ -316,7 +319,7 @@ printed; flip that constant back to `True` to restore the old 5-panel layout (in
 JSW/bar/causal) for `--run final`. **A web app is deferred to a later stage** - this terminal
 demo is the interface for now.
 
-### Causal risk panel (added 2026-10-21, prompt UX fixed 2026-10-22) - asks for age/BMI/family history
+### Causal risk panel (added 2026-10-21/22) - asks for age/BMI/family history
 After an image is chosen (file-browser or single-file mode), predict.py prints "Enter patient
 details (press Enter to skip):" then asks for age, BMI, and family history of knee replacement
 (y/n) - press Enter to skip any of them. `--age`, `--bmi`, `--family-history yes|no` skip their
@@ -331,13 +334,8 @@ python scripts/predict.py path/to/xray.png --age 65 --bmi 33 --family-history ye
 python scripts/predict.py path/to/xray.png --age 55 --bmi 24 --family-history no    # not obese
 python scripts/predict.py path/to/xray.png                                          # prompts; Enter to skip all
 ```
-Example terminal output for the prompted (nothing given on the command line) case:
+Example terminal output (age/BMI/family history given on the command line, so no prompt):
 ```
-Enter patient details (press Enter to skip):
-  Age: 65
-  BMI: 33
-  Family history of knee replacement (y/n): y
-
 Image: path/to/xray.png
 Predicted KL grade: 2 - Minimal (67.3% confidence)
   KL0:  13.1%
@@ -346,17 +344,46 @@ Predicted KL grade: 2 - Minimal (67.3% confidence)
   KL3:   0.0%
   KL4:   0.0%
 
-  Causal risk panel (Phase 5 finding - population-level, not derived from this image):
-  Obesity (BMI>=30) -> KL grade, adjusting for age + family history of knee replacement:
-    Population ATE: +0.48 to +0.58 KL grade points (linear regression / propensity score matching).
-    This patient: age 65, BMI 33.0 -> obese (BMI>=30 threshold).
-    Fitted model at this age/family history: expected KL grade 1.27 if not obese vs 1.75 if obese (+0.48).
-    Caveat: Population-level estimate from OAI data under the causal model's assumptions; not a diagnosis or individual prediction.
+  Causal risk panel (population-level estimates, not derived from this image):
+    This patient: age 65, BMI 33.0 -> obese (threshold 30), family history yes.
+    Expected KL grade: 1.75 (reference age 50/BMI 25/no family history: 0.70).
+    Age contribution (65 vs 50): total +0.34 (95% CI 0.28 to 0.40) = direct +0.38 (95% CI 0.32 to 0.44) + via BMI -0.04 (95% CI -0.06 to -0.02)
+    BMI contribution (33.0 vs 25): +0.53 (95% CI 0.47 to 0.59)
+    Family history contribution: +0.14 (95% CI 0.04 to 0.24)
+    Obesity effect for this age group (65+): +0.41 KL grade points (95% CI 0.28 to 0.55)
+    Caveat: These are population-level causal estimates from OAI data under this DAG's assumptions, not individual predictions.
 Saved result image to outputs/predictions/xray_prediction.png
 ```
+If age or BMI is skipped, the panel shows just "Age/BMI not given - need both for a per-factor
+breakdown." plus the caveat. If family history is skipped but age/BMI are given, falls back to
+the population's most common value (no) and says so. The underlying effects (age total/direct/
+indirect-via-BMI, BMI, family history, obesity-by-age-group) come from `causal_model.py`,
+cached at `outputs/results/causal/causal_query_models.json` - same source as the interactive
+tool below, so the two always agree.
+
 If run through this assistant's sandboxed terminal (no real console attached), the prompts
 auto-skip on EOF instantly instead of waiting - that's a property of that sandbox, not of
 predict.py; run it in your own terminal to actually be prompted and type an answer.
+
+### Causal "what-if" tool (added 2026-10-22) - scripts/causal_query.py
+Interactive per-factor causal exploration, independent of any image - the same models behind
+predict.py's causal risk panel above (`causal_model.py`, cached at
+`outputs/results/causal/causal_query_models.json`; same data/DAG spirit as Phase 5: one knee
+per patient, seed 42, never adjusting for WOMAC/JSN/osteophyte grades). Full methodology and
+results table: `outputs/results/final_results.md` section 9.
+```
+python scripts/causal_query.py                                        # prompts for age/BMI/family history, loops
+python scripts/causal_query.py --age 65 --bmi 33 --family-history yes # answers once, non-interactive
+python scripts/causal_query.py --refit                                # refits all models from data instead of the cache
+```
+For each profile it prints: the expected KL grade (vs. the reference profile age 50/BMI 25/no
+family history); each factor's contribution with a 95% CI (age split into total/direct/
+indirect-via-BMI); the obesity effect for that patient's age group (<55/55-65/65+); then asks
+"Change BMI to?" to see how the expected KL grade changes (blank to stop, loops). Blank age or
+BMI at the main prompt quits. Warns (doesn't silently extrapolate) if the entered age or BMI
+falls outside the data's observed range (age 45-79, BMI 16.9-48.7). Every output repeats the
+caveat that these are population-level estimates under the DAG's assumptions, not individual
+predictions.
 - Always shown: Phase 5's population finding (obesity -> +0.48 to +0.58 KL grade points, linear
   regression / propensity score matching) and the caveat ("Population-level estimate from OAI
   data under the causal model's assumptions; not a diagnosis or individual prediction.").

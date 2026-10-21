@@ -1,0 +1,9 @@
+Effect,coef,ci_low,ci_high,dowhy_ate_per_10y,n
+Age - total (per 10y),0.2262,0.1868,0.2656,0.2262,
+"Age - direct, controlling for BMI (per 10y)",0.2533,0.2152,0.2913,0.2533,
+Age - indirect via BMI (per 10y),-0.0273,-0.0384,-0.0163,,
+"BMI (per 1 unit, adj. age+family history)",0.0664,0.0591,0.0737,0.0664,
+Family history (adj. age+BMI),0.1361,0.0372,0.2351,0.1361,
+"Obesity, age <55 (adj. age+family history)",0.4697,0.3475,0.5919,0.4697,1230.0
+"Obesity, age 55-65 (adj. age+family history)",0.5455,0.4191,0.6719,0.5455,1341.0
+"Obesity, age 65+ (adj. age+family history)",0.4119,0.2788,0.545,0.4119,1500.0

@@ -155,7 +155,57 @@ robust to the refutation checks. Not a assumption-free claim — real unmeasured
 likely exist (physical activity level, prior knee injury/surgery, occupation/physical labor
 history, genetic factors beyond family history of knee replacement).
 
-## 9. Limitations
+## 9. Causal "what-if" tool: per-factor effects (2026-10-22)
+
+Extends section 8 into a reusable interactive tool (`scripts/causal_query.py`) that answers
+age/BMI/family-history "what-if" questions for a given patient profile, and feeds `predict.py`'s
+causal risk panel. Same data and DAG spirit as section 8 (one knee per patient, seed 42, n=4,071;
+never adjusting for WOMAC/JSN/osteophyte grades). Extended DAG: `Age -> BMI -> y`, `Age -> y`,
+`FamilyHistoryKneeReplacement -> y` (`outputs/results/causal/causal_query_dag.png`), so age's
+effect can be split into the part mediated through BMI and the part that isn't.
+
+Each effect below is estimated two ways and cross-checked: a DoWhy `backdoor.linear_regression`
+estimate, and an equivalent statsmodels OLS fit of the same specification (for a confidence
+interval - this dowhy version's linear-regression estimator doesn't expose one directly). One
+methodological note from building this: DoWhy's `identify_effect()`, when given **both** a
+graph and a `common_causes` list, derives the adjustment set purely from graph structure and
+silently ignores `common_causes` - passing BMI as a "common cause" of age's direct effect while
+also passing a graph did nothing, since BMI isn't a graph-parent of Age (it's a mediator). The
+fix used throughout `causal_model.py` is to let DoWhy build its own graph from `common_causes`
+alone (no `graph` argument to `CausalModel`), which reproduces the OLS coefficient exactly.
+
+| Effect | Estimate | 95% CI | n |
+|---|---|---|---|
+| Age - total effect (per 10 years) | +0.226 | [0.187, 0.266] | 4,071 |
+| Age - direct effect, controlling for BMI (per 10 years) | +0.253 | [0.215, 0.291] | 4,071 |
+| Age - indirect effect via BMI (per 10 years) | −0.027 | [−0.038, −0.016] | 4,071 |
+| BMI (per 1 unit, adjusting for age + family history) | +0.066 | [0.059, 0.074] | 4,071 |
+| Family history (adjusting for age + BMI) | +0.136 | [0.037, 0.235] | 4,071 |
+| Obesity, age <55 (adjusting for age + family history) | +0.470 | [0.347, 0.592] | 1,230 |
+| Obesity, age 55-65 | +0.546 | [0.419, 0.672] | 1,341 |
+| Obesity, age 65+ | +0.412 | [0.279, 0.545] | 1,500 |
+
+(Full table with the DoWhy cross-check column: `outputs/results/causal/causal_query_results.csv`.
+Refuter results for every row above - placebo treatment and random common cause, both pass for
+all 8 effects: `outputs/results/causal/causal_query_refutations.csv`.)
+
+**Age's effect is almost entirely direct, not mediated through BMI** - and the small mediated
+part runs slightly *against* the direct effect (older age associates with very slightly lower
+BMI in this cohort, so direct + indirect ≈ 0.226, matching the independently-estimated total
+effect as an internal consistency check). **BMI's effect is roughly linear** over the observed
+range (16.9-48.7): a BMI-band model's dummy coefficients at <25/25-30/30-35/35+ all fall inside
+what the straight-line per-unit effect predicts at each band's mean BMI
+(`causal_query_models.json`'s `bmi_effect.linearity`). **The obesity effect doesn't show a clear
+age trend** - 55-65 is somewhat higher than the other two bands, but all three CIs overlap
+substantially, so this reads as "doesn't obviously differ by age group" rather than a clean
+dose-response story.
+
+`causal_query.py` warns rather than silently extrapolating when a queried age or BMI falls
+outside the data's observed range, and every output - population effects and the interactive
+what-if - repeats the same caveat as section 8: population-level estimates under this DAG's
+assumptions, not individual predictions. Usage: see CLAUDE.md.
+
+## 10. Limitations
 
 - **Segmentation domain shift**: U-Net/U-Net++ trained on CGMH's full-leg X-rays produce
   patchy masks on OAI's tight joint crops (different cohort, different framing/scale);

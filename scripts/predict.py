@@ -24,7 +24,8 @@ from kl_common import (build_classifier, build_hybrid2, load_seg_model, apply_cl
                        grad_cam, MEAN, STD, IMG_SIZE, SEG_SIZE, KL_TEXT)
 from preprocess_xray import prepare_xray
 from measure_jsw import measure_jsw_array, assign_compartments
-from causal_model import load_or_fit_causal_regression, expected_kl
+from causal_model import (load_or_fit_causal_models, age_group_label, expected_kl, warn_if_out_of_range,
+                          contribution_age, contribution_bmi, contribution_famkr, CAUSAL_CAVEAT)
 
 RUNS = ["final", "baseline", "unet", "unetpp"]
 
@@ -36,9 +37,6 @@ HYBRID2_BEAT_FINAL = False
 HYBRID2_TABULAR_COLS = ["V00AGE", "P01BMI"]   # sex omitted - no sex column exists in the dataset (see Phase 3 log)
 HYBRID2_TAB_MEAN = np.array([61.0, 28.58], dtype=np.float32)   # training-set stats, from Phase 3's log
 HYBRID2_TAB_STD = np.array([9.24, 4.88], dtype=np.float32)
-
-CAUSAL_CAVEAT = ("Population-level estimate from OAI data under the causal model's assumptions; "
-                 "not a diagnosis or individual prediction.")
 
 # Hides the Grad-CAM/JSW panels and terminal lines for now, per request (2026-10-22) - keeps
 # the result output to input X-ray + probability bar + causal risk panel. Grad-CAM is still
@@ -108,32 +106,51 @@ def get_patient_inputs(args):
     return age, bmi, famkr
 
 
-def causal_panel_lines(age, bmi, famkr, coefs):
+def _fmt_ci(block):
+    sign = "+" if block["value"] >= 0 else ""
+    return f"{sign}{block['value']:.2f} (95% CI {block['ci_low']:.2f} to {block['ci_high']:.2f})"
+
+
+def causal_panel_lines(age, bmi, famkr, models):
     """Lines for both the terminal printout and the result figure's causal risk panel. Built
-    once so the two stay identical (Phase 5's population finding, plus a patient-specific
-    estimate from the fitted regression-adjustment model if age and BMI were given)."""
-    lines = [
-        "Causal risk panel (Phase 5 finding - population-level, not derived from this image):",
-        "Obesity (BMI>=30) -> KL grade, adjusting for age + family history of knee replacement:",
-        "  Population ATE: +0.48 to +0.58 KL grade points (linear regression / propensity score matching).",
-    ]
-    if age is not None and bmi is not None:
-        obese = bmi >= 30
-        lines.append(f"  This patient: age {age:.0f}, BMI {bmi:.1f} -> "
-                     f"{'obese' if obese else 'not obese'} (BMI>=30 threshold).")
-        if famkr is None:
-            famkr_used = coefs["most_common_famkr"]
-            lines.append(f"  Family history skipped - using the population's most common value "
-                         f"({'yes' if famkr_used else 'no'}).")
-        else:
-            famkr_used = famkr
-        kl_obese = expected_kl(coefs, age, famkr_used, 1)
-        kl_not = expected_kl(coefs, age, famkr_used, 0)
-        lines.append(f"  Fitted model at this age/family history: expected KL grade "
-                     f"{kl_not:.2f} if not obese vs {kl_obese:.2f} if obese "
-                     f"(+{kl_obese - kl_not:.2f}).")
+    once so the two stay identical. Uses causal_model.py's per-factor regression-adjustment
+    estimates (age total/direct/indirect-via-BMI, BMI, family history, all relative to the
+    reference profile age 50/BMI 25/no family history) plus the obesity-by-age-group effect -
+    the same models behind causal_query.py's interactive what-if tool."""
+    lines = ["Causal risk panel (population-level estimates, not derived from this image):"]
+    if age is None or bmi is None:
+        lines.append("  Age/BMI not given - need both for a per-factor breakdown.")
+        lines.append(f"  Caveat: {CAUSAL_CAVEAT}")
+        return lines
+
+    for w in warn_if_out_of_range(models, age, bmi):
+        lines.append(f"  WARNING: {w}")
+    if famkr is None:
+        famkr_used = models["most_common_famkr"]
+        lines.append(f"  Family history skipped - using the population's most common value "
+                     f"({'yes' if famkr_used else 'no'}).")
     else:
-        lines.append("  Age/BMI not given - showing only the population-level finding above.")
+        famkr_used = famkr
+    obese = bmi >= 30
+    kl_profile = expected_kl(models, age, bmi, famkr_used)
+    ref = models["reference"]
+    kl_ref = expected_kl(models, ref["age"], ref["bmi"], ref["famkr"])
+    lines.append(f"  This patient: age {age:.0f}, BMI {bmi:.1f} -> {'obese' if obese else 'not obese'} "
+                 f"(threshold 30), family history {'yes' if famkr_used else 'no'}.")
+    lines.append(f"  Expected KL grade: {kl_profile:.2f} (reference age 50/BMI 25/no family history: {kl_ref:.2f}).")
+
+    age_c = contribution_age(models, age)
+    lines.append(f"  Age contribution ({age:.0f} vs 50): total {_fmt_ci(age_c['total'])} = "
+                 f"direct {_fmt_ci(age_c['direct'])} + via BMI {_fmt_ci(age_c['indirect'])}")
+    bmi_c = contribution_bmi(models, bmi)
+    lines.append(f"  BMI contribution ({bmi:.1f} vs 25): {_fmt_ci(bmi_c)}")
+    famkr_c = contribution_famkr(models, famkr_used)
+    lines.append(f"  Family history contribution: {_fmt_ci(famkr_c)}")
+
+    band = age_group_label(age)
+    ob = models["obesity_by_age_group"][band]
+    lines.append(f"  Obesity effect for this age group ({band}): +{ob['coef']:.2f} KL grade points "
+                 f"(95% CI {ob['ci_low']:.2f} to {ob['ci_high']:.2f})")
     lines.append(f"  Caveat: {CAUSAL_CAVEAT}")
     return lines
 
@@ -341,7 +358,7 @@ def main():
     print(f"Loading models ({'hybrid2' if use_hybrid2 else args.run}) on {device}...")
     seg_model, classifier = load_models(args.run, args.ckpt_dir, device, use_hybrid2=use_hybrid2)
     crop_seg_model = load_seg_model("unetpp", args.ckpt_dir, device) if args.auto_crop else None
-    causal_coefs = load_or_fit_causal_regression()
+    causal_coefs = load_or_fit_causal_models()
 
     def handle(path):
         # Age/BMI/family history are for the causal risk panel only - asked here (or taken from

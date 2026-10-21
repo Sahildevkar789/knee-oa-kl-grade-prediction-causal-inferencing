@@ -1,0 +1,221 @@
+{
+  "reference": {
+    "age": 50.0,
+    "bmi": 25.0,
+    "famkr": 0
+  },
+  "n": 4071,
+  "data_ranges": {
+    "age_min": 45.0,
+    "age_max": 79.0,
+    "bmi_min": 16.9,
+    "bmi_max": 48.7
+  },
+  "most_common_famkr": 0,
+  "combined_model": {
+    "intercept": -2.227727401339011,
+    "age_coef": 0.025326448514708902,
+    "bmi_coef": 0.06638551834515626,
+    "famkr_coef": 0.13612634856717407
+  },
+  "age_effect": {
+    "total_per_10y": {
+      "coef": 0.22619225351100974,
+      "se": 0.02009235402757995,
+      "ci_low": 0.1868002428842861,
+      "ci_high": 0.2655842641377334,
+      "dowhy_ate_per_10y": 0.22619225351100947
+    },
+    "direct_per_10y": {
+      "coef": 0.253264485147089,
+      "se": 0.019405733416590007,
+      "ci_low": 0.2152186239276122,
+      "ci_high": 0.29131034636656583,
+      "dowhy_ate_per_10y": 0.25326448514708944
+    },
+    "indirect_per_10y": {
+      "coef": -0.0273499401824392,
+      "se": 0.00563416473289228,
+      "ci_low": -0.03839290305890807,
+      "ci_high": -0.01630697730597033
+    },
+    "consistency_check_per_10y": {
+      "direct_plus_indirect": 0.2259145449646498,
+      "total": 0.22619225351100974
+    }
+  },
+  "bmi_effect": {
+    "per_unit": {
+      "coef": 0.06638551834515626,
+      "se": 0.003707596745317432,
+      "ci_low": 0.05911659899014031,
+      "ci_high": 0.0736544377001722,
+      "dowhy_ate": 0.06638551834515616
+    },
+    "linearity": {
+      "band_coef": {
+        "<25": {
+          "coef": 0.0,
+          "ci_low": 0.0,
+          "ci_high": 0.0
+        },
+        "25-30": {
+          "coef": 0.39591961731196257,
+          "ci_low": 0.3072652779206967,
+          "ci_high": 0.48457395670322845
+        },
+        "30-35": {
+          "coef": 0.6375573884433705,
+          "ci_low": 0.5398699165105846,
+          "ci_high": 0.7352448603761564
+        },
+        "35+": {
+          "coef": 0.9812041652041483,
+          "ci_low": 0.8495601707344382,
+          "ci_high": 1.1128481596738584
+        }
+      },
+      "linear_pred": {
+        "<25": 0.0,
+        "25-30": 0.30807723171027485,
+        "30-35": 0.6195416080840079,
+        "35+": 0.989883920130871
+      },
+      "roughly_linear": true,
+      "note": "The linear BMI effect's predicted step at each band's mean BMI falls inside that band's own (dummy-coded) confidence interval - the linear fit is a reasonable approximation over this range."
+    }
+  },
+  "family_history_effect": {
+    "coef": 0.13612634856717407,
+    "se": 0.050465835580968246,
+    "ci_low": 0.03718568316583318,
+    "ci_high": 0.23506701396851495,
+    "dowhy_ate": 0.13612634856717531
+  },
+  "obesity_by_age_group": {
+    "<55": {
+      "coef": 0.4696613111281445,
+      "se": 0.06229136910608023,
+      "ci_low": 0.3474518222450461,
+      "ci_high": 0.5918708000112429,
+      "n": 1230,
+      "dowhy_ate": 0.469661311128144
+    },
+    "55-65": {
+      "coef": 0.5455384730930553,
+      "se": 0.06442761696377633,
+      "ci_low": 0.4191482469677188,
+      "ci_high": 0.6719286992183917,
+      "n": 1341,
+      "dowhy_ate": 0.5455384730930559
+    },
+    "65+": {
+      "coef": 0.41191007680323266,
+      "se": 0.06785374972232637,
+      "ci_low": 0.278811486910009,
+      "ci_high": 0.5450086666964563,
+      "n": 1500,
+      "dowhy_ate": 0.4119100768032322
+    }
+  },
+  "refutations": [
+    {
+      "effect": "age_total",
+      "refuter": "placebo_treatment_refuter",
+      "original_effect": 0.022619225351100947,
+      "new_effect": -2.2119924054120333e-06,
+      "p_value": 0.88
+    },
+    {
+      "effect": "age_total",
+      "refuter": "random_common_cause",
+      "original_effect": 0.022619225351100947,
+      "new_effect": 0.022619180581917323,
+      "p_value": 0.86
+    },
+    {
+      "effect": "age_direct",
+      "refuter": "placebo_treatment_refuter",
+      "original_effect": 0.025326448514708944,
+      "new_effect": 0.00029060832725238516,
+      "p_value": 0.8799999999999999
+    },
+    {
+      "effect": "age_direct",
+      "refuter": "random_common_cause",
+      "original_effect": 0.025326448514708944,
+      "new_effect": 0.025327668537846272,
+      "p_value": 1.0
+    },
+    {
+      "effect": "bmi",
+      "refuter": "placebo_treatment_refuter",
+      "original_effect": 0.06638551834515616,
+      "new_effect": 0.0003375105926583422,
+      "p_value": 0.96
+    },
+    {
+      "effect": "bmi",
+      "refuter": "random_common_cause",
+      "original_effect": 0.06638551834515616,
+      "new_effect": 0.0663813341268412,
+      "p_value": 0.9
+    },
+    {
+      "effect": "family_history",
+      "refuter": "placebo_treatment_refuter",
+      "original_effect": 0.13612634856717531,
+      "new_effect": -0.0024041139392435686,
+      "p_value": 1.0
+    },
+    {
+      "effect": "family_history",
+      "refuter": "random_common_cause",
+      "original_effect": 0.13612634856717531,
+      "new_effect": 0.1361330417573221,
+      "p_value": 0.96
+    },
+    {
+      "effect": "obesity_<55",
+      "refuter": "placebo_treatment_refuter",
+      "original_effect": 0.469661311128144,
+      "new_effect": -0.0067805376044320145,
+      "p_value": 0.92
+    },
+    {
+      "effect": "obesity_<55",
+      "refuter": "random_common_cause",
+      "original_effect": 0.469661311128144,
+      "new_effect": 0.46977145131995685,
+      "p_value": 0.94
+    },
+    {
+      "effect": "obesity_55-65",
+      "refuter": "placebo_treatment_refuter",
+      "original_effect": 0.5455384730930559,
+      "new_effect": 0.007432687813429388,
+      "p_value": 0.8999999999999999
+    },
+    {
+      "effect": "obesity_55-65",
+      "refuter": "random_common_cause",
+      "original_effect": 0.5455384730930559,
+      "new_effect": 0.5455269424567962,
+      "p_value": 0.96
+    },
+    {
+      "effect": "obesity_65+",
+      "refuter": "placebo_treatment_refuter",
+      "original_effect": 0.4119100768032322,
+      "new_effect": 0.0006359954680772817,
+      "p_value": 0.94
+    },
+    {
+      "effect": "obesity_65+",
+      "refuter": "random_common_cause",
+      "original_effect": 0.4119100768032322,
+      "new_effect": 0.4117703776755557,
+      "p_value": 0.94
+    }
+  ]
+}

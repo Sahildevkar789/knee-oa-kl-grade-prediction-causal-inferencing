@@ -1,0 +1,15 @@
+effect,refuter,original_effect,new_effect,p_value
+age_total,placebo_treatment_refuter,0.0226,-0.0,0.88
+age_total,random_common_cause,0.0226,0.0226,0.86
+age_direct,placebo_treatment_refuter,0.0253,0.0003,0.88
+age_direct,random_common_cause,0.0253,0.0253,1.0
+bmi,placebo_treatment_refuter,0.0664,0.0003,0.96
+bmi,random_common_cause,0.0664,0.0664,0.9
+family_history,placebo_treatment_refuter,0.1361,-0.0024,1.0
+family_history,random_common_cause,0.1361,0.1361,0.96
+obesity_<55,placebo_treatment_refuter,0.4697,-0.0068,0.92
+obesity_<55,random_common_cause,0.4697,0.4698,0.94
+obesity_55-65,placebo_treatment_refuter,0.5455,0.0074,0.9
+obesity_55-65,random_common_cause,0.5455,0.5455,0.96
+obesity_65+,placebo_treatment_refuter,0.4119,0.0006,0.94
+obesity_65+,random_common_cause,0.4119,0.4118,0.94
