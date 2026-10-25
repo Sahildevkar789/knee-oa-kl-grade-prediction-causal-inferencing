@@ -22,10 +22,14 @@ import numpy as np
 import pandas as pd
 import statsmodels.api as sm
 import networkx as nx
-import matplotlib
-matplotlib.use("Agg")
-import matplotlib.pyplot as plt
 from dowhy import CausalModel
+
+# matplotlib/pyplot are imported lazily, inside _draw_dag() only, and NOT forced to the Agg
+# backend here: this module is imported by predict.py before predict.py decides whether it
+# needs an interactive GUI backend (file-browser/--show) or a headless one (plain batch run).
+# Importing pyplot at module level with matplotlib.use("Agg") locked the whole process to Agg
+# as a side effect of just importing causal_model - predict.py's own result window silently
+# stopped popping up because of it (caught via a real, reproducible repro, not speculatively).
 
 OUT_DIR = "outputs/results/causal"
 MODELS_PATH = os.path.join(OUT_DIR, "causal_query_models.json")
@@ -114,18 +118,26 @@ def _dowhy_ate(d, treatment, common_causes, label, refute_rows, run_refuters=Tru
 
 
 def _draw_dag():
+    """Saves the DAG png using matplotlib's object-oriented API directly (Figure +
+    FigureCanvasAgg), deliberately bypassing pyplot/matplotlib.use() entirely - this is a
+    one-shot static save during model fitting, and must not touch the global backend that
+    predict.py/causal_query.py may need for an interactive window later in the same process."""
+    from matplotlib.figure import Figure
+    from matplotlib.backends.backend_agg import FigureCanvasAgg
+
     g = nx.DiGraph()
     g.add_edges_from([("Age", "BMI"), ("Age", "KL_grade"), ("FamilyHistoryKneeReplacement", "KL_grade"),
                       ("BMI", "KL_grade")])
     pos = {"Age": (0, 1), "FamilyHistoryKneeReplacement": (2, 1), "BMI": (0, 0), "KL_grade": (2, 0)}
-    fig, ax = plt.subplots(figsize=(6, 5))
+    fig = Figure(figsize=(6, 5))
+    FigureCanvasAgg(fig)
+    ax = fig.add_subplot(111)
     nx.draw(g, pos, ax=ax, with_labels=True, node_color="#D8E4F0", node_size=3400,
            font_size=8, arrowsize=20, edge_color="#555")
     ax.set_title("Extended causal DAG: Age -> BMI -> KL grade\n(+ direct Age effect, family history)")
-    plt.tight_layout()
+    fig.tight_layout()
     os.makedirs(OUT_DIR, exist_ok=True)
-    plt.savefig(DAG_PATH, dpi=130)
-    plt.close(fig)
+    fig.savefig(DAG_PATH, dpi=130)
 
 
 def _refit():
