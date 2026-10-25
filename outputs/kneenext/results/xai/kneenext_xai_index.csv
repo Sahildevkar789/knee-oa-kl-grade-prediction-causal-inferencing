@@ -1,0 +1,16 @@
+image_path,true_grade,pred_grade,xai_figure
+dataset\test\0\9022408L.png,0,2,outputs/kneenext/results\xai\KL0_9022408L.png
+dataset\test\0\9003175L.png,0,0,outputs/kneenext/results\xai\KL0_9003175L.png
+dataset\test\0\9003175R.png,0,0,outputs/kneenext/results\xai\KL0_9003175R.png
+dataset\test\1\9001400L.png,1,0,outputs/kneenext/results\xai\KL1_9001400L.png
+dataset\test\1\9008934R.png,1,1,outputs/kneenext/results\xai\KL1_9008934R.png
+dataset\test\1\9017876L.png,1,1,outputs/kneenext/results\xai\KL1_9017876L.png
+dataset\test\2\9003316R.png,2,1,outputs/kneenext/results\xai\KL2_9003316R.png
+dataset\test\2\9006407R.png,2,2,outputs/kneenext/results\xai\KL2_9006407R.png
+dataset\test\2\9007827L.png,2,2,outputs/kneenext/results\xai\KL2_9007827L.png
+dataset\test\3\9046206L.png,3,2,outputs/kneenext/results\xai\KL3_9046206L.png
+dataset\test\3\9011053L.png,3,3,outputs/kneenext/results\xai\KL3_9011053L.png
+dataset\test\3\9012867L.png,3,3,outputs/kneenext/results\xai\KL3_9012867L.png
+dataset\test\4\9101066R.png,4,3,outputs/kneenext/results\xai\KL4_9101066R.png
+dataset\test\4\9012867R.png,4,4,outputs/kneenext/results\xai\KL4_9012867R.png
+dataset\test\4\9048789L.png,4,4,outputs/kneenext/results\xai\KL4_9048789L.png

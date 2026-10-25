@@ -423,3 +423,49 @@ against a real file (still untested); get a real bilateral X-ray to test the spl
 hybrid architectures specifically (both showed the same early-epoch-peak-then-degrade
 instability, worth a second look if hybrids are revisited); a web app, deferred by design
 (Phase 6 was explicitly terminal-only "for now").
+
+## KneeNeXt (experimental)
+
+Built under a strict add-only rule (2026-10-26): no existing file was edited. All new code is
+in `scripts/kneenext.py` (architecture), `scripts/train_kneenext.py` (two-stage trainer +
+cumulative ablation driver), `scripts/evaluate_kneenext.py` (one-time test evaluation +
+bootstrap + Grad-CAM), `scripts/predict_kneenext.py` (demo, same behavior as `predict.py` but
+using KneeNeXt). All new outputs are under `outputs/kneenext/` only - `predict.py` and
+`kl_final` are unchanged and remain the default.
+
+**What it is**: `kl_final`'s ConvNeXt-Tiny+CBAM, loaded read-only from `kl_final_best.pt`,
+with four optional modules (each gated by a flag, so they ablate independently and
+cumulatively): a **Joint-Zoom branch** (a second, cropped-and-zoomed view of the joint line,
+through the same shared backbone), **multi-scale fusion** (Stage 3 features folded into Stage
+4 before pooling), **Joint-Guided CBAM** (spatial attention nudged by a learnable-weight
+Gaussian prior around the joint line), and an **asymmetry module** (`|left - right|` of the
+global view's pooled attended features, medial/lateral compartment asymmetry as an explicit
+signal). Full architecture diagram, each module's clinical motivation, and the complete
+ablation/results tables: `outputs/kneenext/results/kneenext_summary.md`.
+
+**Ablation result** (validation QWK, 2 seeds each): each module added individually on top of
+the running best did NOT beat it (Joint-Zoom alone -0.0003, multi-scale fusion -0.0028,
+Joint-Guided CBAM -0.0007) - only the full four-module combination beat `control` (kl_final
+retrained with KneeNeXt's two-stage schedule), by +0.0056 mean val QWK (0.8446 vs 0.8390),
+a synergistic rather than additive effect.
+
+**Test result** (evaluated once): KneeNeXt (full config) - accuracy 0.6991, QWK 0.8609, macro
+F1 0.6940, MAE 0.3353 - numerically better than `kl_final` (0.6937 / 0.8570 / 0.6926 / 0.3396)
+on every metric, but the paired bootstrap difference is NOT statistically significant (QWK
+diff +0.0040, 95% CI [-0.0021, 0.0102]) - same pattern as Hybrid 1/Hybrid 2 before it. Vs the
+original EfficientNet-B0 baseline, KneeNeXt IS significantly better (QWK diff +0.0364, 95% CI
+[0.0210, 0.0512]). **`kl_final` remains the locked model** - KneeNeXt is an experimental,
+additive result, not a replacement.
+
+Demo: `python scripts/predict_kneenext.py` (file browser) or
+`python scripts/predict_kneenext.py path/to/xray.png --show [--age N] [--bmi N]
+[--family-history yes|no]` - same patient-detail prompts and causal risk panel as
+`predict.py`, plus a zoom-view panel specific to KneeNeXt's architecture.
+
+Note on git: the 10 individual per-config/per-seed ablation checkpoints (~1.1GB total) are
+kept locally under `outputs/kneenext/checkpoints/` but were not pushed to GitHub - only
+`kneenext_best.pt` (the winner) was. Normally this project excludes non-winning checkpoints
+via `.gitignore`/`.gitattributes`, but adding new patterns there would itself be an edit to
+an existing file, which this task's add-only rule forbade - so they're simply left untracked
+rather than committed, achieving the same "don't bloat the repo" outcome without touching
+those files.

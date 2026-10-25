@@ -1,0 +1,3 @@
+Metric,MeanDiff,CI_low,CI_high,Significant_95pct,Resamples
+QWK (kneenext - baseline),0.0364,0.021,0.0512,True,2000
+Accuracy (kneenext - baseline),0.0706,0.0453,0.0961,True,2000
