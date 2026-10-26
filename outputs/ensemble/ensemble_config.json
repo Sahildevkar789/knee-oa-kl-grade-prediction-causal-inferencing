@@ -1,0 +1,15 @@
+{
+  "selected_models": [
+    "kl_final_seed7",
+    "kneenext_seed7"
+  ],
+  "thresholds": [
+    0.7,
+    0.44999999999999996,
+    0.5,
+    0.5499999999999999
+  ],
+  "use_tta": false,
+  "val_acc": 0.7106537530266344,
+  "val_qwk": 0.8399108661232628
+}

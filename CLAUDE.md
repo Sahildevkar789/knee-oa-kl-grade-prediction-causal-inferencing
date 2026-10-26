@@ -469,3 +469,80 @@ via `.gitignore`/`.gitattributes`, but adding new patterns there would itself be
 an existing file, which this task's add-only rule forbade - so they're simply left untracked
 rather than committed, achieving the same "don't bloat the repo" outcome without touching
 those files.
+
+## Ensemble (experimental)
+
+Built under a strict add-only rule (2026-10-26), alongside the causal/XAI extensions below -
+all new code in `scripts/ensemble_kl.py`; all new outputs under `outputs/ensemble/`. No
+classifiers were retrained; model selection used validation only, the test set was touched
+once. No existing file was edited.
+
+**What it is**: a greedy probability ensemble over every available trained CORAL model
+(`kl_final` seed 42, its seed-7 sibling, Hybrid 1, KneeNeXt both seeds) - starts from the
+single best model by val accuracy, adds whichever remaining model most improves val accuracy
+without dropping val QWK by more than 0.005, then tunes the 4 CORAL decision thresholds
+(5-fold CV on validation, adopted only if it generalizes) and checks horizontal-flip TTA
+(adopted only if it helps). Selected: `kl_final_seed7` + `kneenext_seed7`, tuned thresholds
+[0.70, 0.45, 0.50, 0.55], no TTA.
+
+**Result** (evaluated once on test): accuracy **0.7172**, QWK **0.8574**, macro F1 0.6933,
+MAE 0.3293 - **above the 70% accuracy target**, and the first configuration in this project to
+beat `kl_final` on accuracy with statistical significance (+0.0234, 95% CI [0.0073, 0.0405]);
+QWK is essentially tied (+0.0005, not significant). Trade-off, reported honestly: the tuned
+thresholds cost some KL1 recall (0.2432 vs `kl_final`'s own 0.3918) for the overall accuracy
+gain. Full write-up: `outputs/extended/extended_summary.md` section "Part A"; full detail:
+`outputs/ensemble/ensemble_summary.md`.
+
+Command: `python scripts/ensemble_kl.py` (re-fits the ensemble selection from cached
+val/test probabilities each run; no training involved).
+
+## Extended causal and XAI (experimental)
+
+Built under a strict add-only rule (2026-10-26). New code: `scripts/causal_extended.py`
+(Part B), `scripts/xai_extended.py` (Part C), `scripts/predict_extended.py` (combined demo).
+New outputs: `outputs/extended/causal/`, `outputs/extended/xai/`. No existing file was
+edited; econml/captum/pytorch-grad-cam were installed without touching the torch install
+(verified `torch.cuda.is_available()` stayed `True` throughout). Decision log (shared across
+all three extended-work parts): `outputs/extended/extended_log.md`.
+
+**Causal extensions** (same one-knee-per-patient data/DAG discipline as Phase 5 - never
+adjusts for WOMAC/JSN/osteophyte/PASE): the obesity effect's **E-value is 2.345** (a hidden
+confounder would need at least a 2.34x risk-ratio association with both obesity and KL grade
+to explain the effect away) and a DoWhy `add_unobserved_common_cause` grid never flipped the
+effect negative up to strength 0.30 on both treatment and outcome. **Prior knee injury**
+(`P01INJR`/`P01INJL`, matched by knee side) is a usable second cause: +0.540 (linear
+regression) to +0.550 (PSM) KL grade points, adjusted for age/BMI/family history, refuters
+pass. **Personalized obesity effects** (EconML `CausalForestDML`): mean individual effect
++0.510 (consistent with the +0.48 to +0.58 population range), little age trend, a modest
+difference by family history (+0.46 with vs +0.52 without). **BMI dose-response**: roughly
+linear across the observed range (16.9-48.7), with a 95% confidence band.
+
+**XAI extensions** (kl_final; KneeNeXt where noted - reporting only, not model selection): a
+**real bug was found and fixed** (for this new script only, not in `kneenext.py` itself,
+which is an existing file) - `kneenext.grad_cam_view` pairs the zoom view's activation with
+the global view's gradient, a mismatched/meaningless CAM for any config with `use_zoom=True`
+(including the winning "asymmetry" config), confirmed empirically against ground-truth
+per-view gradients. **This affected every KneeNeXt Grad-CAM figure committed in the prior
+KneeNeXt task.** Fixed here via `kneenext_grad_cam_corrected()` (capture via `retain_grad()`
+instead of an overwritable hook), reused by `predict_extended.py`. Other findings: Grad-CAM
+and Grad-CAM++ agree strongly with each other (ρ=0.877) but weakly with Integrated
+Gradients/Occlusion (ρ=0.13-0.21); **Integrated Gradients passes the deletion-curve
+faithfulness test clearly, Grad-CAM does not** (its importance-ordered deletion curve has a
+*higher* AUC than random deletion - a genuine, reported limitation); the parameter-
+randomization sanity check **passes** (correlation with the original map drops sharply once
+the backbone is randomized); 3-nearest-neighbor case retrieval matches the true grade 69.24%
+of the time; calibration is middling out of the box (ECE 0.1514, no temperature scaling), but
+an entropy-based uncertainty flag (threshold chosen on validation) usefully separates a
+confident 78.2% of test images (77.1% accuracy) from an uncertain 21.8% (41.7% accuracy).
+
+**Combined demo** (`predict_extended.py` - same behavior as `predict.py`, plus the ensemble
+if it beats `kl_final` on validation, Grad-CAM averaged over the models used, 3 similar
+training cases, an uncertainty flag, and the causal panel extended with this patient's
+individual obesity effect and the population knee-injury finding):
+```
+python scripts/predict_extended.py                              # file browser
+python scripts/predict_extended.py path/to/xray.png --show [--age N] [--bmi N] [--family-history yes|no]
+```
+`predict.py` and its default model (`kl_final`) are unchanged.
+
+Full write-up (all three parts plus the final comparison table): `outputs/extended/extended_summary.md`.
