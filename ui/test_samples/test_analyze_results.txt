@@ -1,0 +1,14 @@
+﻿
+Ensemble val accuracy 0.7107 vs kl_final solo val accuracy 0.6755 -> using the ENSEMBLE.
+dataset/test/0/9003175L.png: true=0 pred=0 conf=0.942 model=ensemble uncertain=False n_neighbors=3 
+causal_available=True ig_present=True cam_present=True
+dataset/test/1/9001400L.png: true=1 pred=0 conf=0.854 model=ensemble uncertain=False n_neighbors=3 
+causal_available=True ig_present=True cam_present=True
+dataset/test/2/9003316R.png: true=2 pred=0 conf=0.491 model=ensemble uncertain=True n_neighbors=3 
+causal_available=True ig_present=True cam_present=True
+dataset/test/3/9011053L.png: true=3 pred=3 conf=0.998 model=ensemble uncertain=False n_neighbors=3 
+causal_available=True ig_present=True cam_present=True
+dataset/test/4/9012867R.png: true=4 pred=4 conf=0.998 model=ensemble uncertain=False n_neighbors=3 
+causal_available=True ig_present=True cam_present=True
+
+
