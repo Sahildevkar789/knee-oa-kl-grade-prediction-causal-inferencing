@@ -1,0 +1,6 @@
+Grade,Baseline Precision,Baseline Recall,kl_final Precision,kl_final Recall,Ensemble Precision,Ensemble Recall
+KL0,0.8119,0.6213,0.7917,0.8028,0.7468,0.9045
+KL1,0.3131,0.5574,0.3779,0.3919,0.4364,0.2432
+KL2,0.6997,0.5839,0.7089,0.6756,0.7189,0.6980
+KL3,0.8269,0.7713,0.8056,0.7803,0.8018,0.8161
+KL4,0.7759,0.9000,0.7414,0.8600,0.7818,0.8600

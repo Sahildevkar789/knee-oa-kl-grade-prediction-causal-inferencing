@@ -1,0 +1,5 @@
+Model,Epochs,Precision,Recall,F1/Dice,IoU,Selected
+U-Net,40,0.9727,0.9728,0.9727,0.9469,no
+U-Net++,40,0.9756,0.972,0.9738,0.949,YES
+DeepLabV3+,20,0.9743,0.95,0.962,0.9268,no
+Mask R-CNN,20,0.9571,0.9644,0.9607,0.9244,no

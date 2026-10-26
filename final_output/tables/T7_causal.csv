@@ -1,0 +1,12 @@
+Finding,Value,Source
+Obesity effect - linear regression,+0.4851 KL grade points,causal_estimates.csv
+Obesity effect - propensity score matching,+0.5827 KL grade points,causal_estimates.csv
+Obesity effect - E-value (point estimate),2.345,extended_summary.md (Part B)
+Obesity effect - E-value (CI bound),2.167,extended_summary.md (Part B)
+Obesity effect - personalized mean (causal forest),+0.510 KL grade points,causal_forest_individual_effects.csv
+"Refuters (primary, linear regression)","placebo ~0, random common cause & data subset stable",outputs/results/causal/refutation_results.csv
+Knee injury (association) - linear regression,+0.5397 KL grade points,injury_estimates.csv
+Knee injury (association) - PSM,+0.5504 KL grade points,injury_estimates.csv
+Knee injury refuters,"placebo=0.0006, random_cc=0.5397, subset=0.5438",injury_refutations.csv
+"BMI effect (per 1 unit, adj. age+family history)",+0.0664 KL grade points,causal_query_results.csv
+Family history effect (adj. age+BMI),+0.1361 KL grade points,causal_query_results.csv

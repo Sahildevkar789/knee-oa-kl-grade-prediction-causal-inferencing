@@ -1,0 +1,6 @@
+Model/Paper,Reported accuracy,Same dataset/split?
+Chen et al. 2019,69.7%,"OAI (same source dataset); split not verifiable from our files, not claimed identical"
+Tiulpin et al. 2018,66.7%,"OAI (same source dataset); split not verifiable from our files, not claimed identical"
+Our EfficientNet-B0 baseline,62.84%,"OAI, our own train/val/test split (see CLAUDE.md)"
+Our kl_final,69.37%,"OAI, our own train/val/test split"
+Our Ensemble (final),71.72%,"OAI, our own train/val/test split"

@@ -1,0 +1,7 @@
+Step,Val QWK before,Val QWK after,Decision
+Warmup (2 epochs),0.8312,0.8315,"adopted (tie, but smoothed early instability)"
++clahe,0.8286,0.8340,adopted
++cbam (on clahe),0.8340,0.8368,adopted
++coral (on clahe+cbam),0.8368,0.8416,adopted
++class-weights sqrt (on clahe+cbam+coral),0.8416,0.8346,rejected
+"+TTA (eval-only, on clahe+cbam+coral)",0.8346,0.8363,rejected

@@ -546,3 +546,38 @@ python scripts/predict_extended.py path/to/xray.png --show [--age N] [--bmi N] [
 `predict.py` and its default model (`kl_final`) are unchanged.
 
 Full write-up (all three parts plus the final comparison table): `outputs/extended/extended_summary.md`.
+
+## Final output (2026-10-27)
+
+Built under a strict rule (no training, no existing file changed - only new files, CLAUDE.md/
+`.gitignore` appended at the end only): a report-ready package under `final_output/`, built by
+the new `scripts/make_final_figures.py` reading every number directly from this project's
+existing results files (nothing invented; missing values written "not available"; the one
+literature-comparison table only includes the two papers explicitly named for it - no other
+citations were found anywhere in the project's existing results). Log:
+`final_output/packaging_log.md`.
+
+- `final_output/tables/` - T1 segmentation, T2 backbones, T3 ablation, T4 main results (test,
+  ensemble highlighted), T5 per-grade precision/recall, T6 literature comparison, T7 causal,
+  T8 XAI - each as both CSV and a 300dpi report-ready PNG.
+- `final_output/figures/` - side-by-side confusion matrices (baseline/kl_final/ensemble), an
+  accuracy/QWK bar chart, one sample per KL grade (X-ray + Integrated Gradients on `kl_final`
+  + bug-fixed Grad-CAM on KneeNeXt + 3 similar cases - KneeNeXt Grad-CAM generated fresh with
+  `xai_extended.py`'s corrected method, no old KneeNeXt Grad-CAM figure reused), deletion
+  curves, the reliability diagram, the obesity effect plot, and the BMI dose-response curve.
+- `final_output/FINAL_SYSTEM.md` - the pipeline in plain language (input -> CLAHE -> ensemble
+  of `kl_final` seed 7 + KneeNeXt seed 7 with tuned thresholds -> uncertainty flag -> XAI ->
+  causal panel), what each component does and why, how to run the demo, and an explicit
+  "Limitations and honest notes" section (the ensemble ties `kl_final` on QWK and only wins on
+  accuracy; KL1 recall dropped 0.39->0.24; Grad-CAM failed the deletion faithfulness test while
+  Integrated Gradients passed; the knee injury result is an association, not a demonstrated
+  cause; KneeNeXt is an architecture modification, not a new algorithm; segmentation masks and
+  JSW both failed to help/validate; single dataset, no external validation).
+- `final_output/viva_notes.md` - one-paragraph summary, a claim/don't-claim list, the ensemble
+  and KneeNeXt math, and 15 likely examiner questions with short, results-only answers.
+- `final_output/demo_samples/` - `predict_extended.py` run on one test image per KL grade
+  (no GUI); `predict.py` was also re-run unchanged on one image to confirm it still works.
+
+Demo command: `python scripts/predict_extended.py path/to/xray.png --show` (or
+`python scripts/make_final_figures.py` to regenerate every table/figure from the current
+results files).

@@ -1,0 +1,11 @@
+Metric,Value
+Deletion AUC - Grad-CAM (importance order),0.3929
+Deletion AUC - Grad-CAM (random order),0.3514
+Deletion AUC - Integrated Gradients (importance order),0.1845
+Deletion AUC - Integrated Gradients (random order),0.3599
+Faithfulness verdict,IG passes (importance << random); Grad-CAM does not (importance > random)
+"Sanity check (final randomization vs. original, Spearman)",-0.4377 (passed - drops sharply)
+"Similar-case agreement (3-NN majority vs. true grade, test set)",0.6924 (1146/1655)
+"Expected Calibration Error (test, 10 bins)",0.1514
+Uncertainty flag - confident subset,"1295/1655 (78.2%), accuracy 0.7707"
+Uncertainty flag - uncertain subset,"360/1655 (21.8%), accuracy 0.4167"
