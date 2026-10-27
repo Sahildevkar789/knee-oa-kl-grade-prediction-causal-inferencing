@@ -1,7 +1,39 @@
 const $ = (id) => document.getElementById(id);
+const prefersReducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
 
+/* ========================= Theme ========================= */
+function applyTheme(theme) {
+  document.documentElement.setAttribute("data-theme", theme);
+  const toggle = $("theme-toggle");
+  const moonIcon = toggle?.querySelector(".icon-moon");
+  const sunIcon = toggle?.querySelector(".icon-sun");
+  const label = $("theme-toggle-label");
+  if (theme === "light") {
+    moonIcon?.classList.add("hidden");
+    sunIcon?.classList.remove("hidden");
+    if (label) label.textContent = "Light mode";
+    toggle?.setAttribute("aria-pressed", "true");
+  } else {
+    sunIcon?.classList.add("hidden");
+    moonIcon?.classList.remove("hidden");
+    if (label) label.textContent = "Dark mode";
+    toggle?.setAttribute("aria-pressed", "false");
+  }
+}
+(function initTheme() {
+  let saved = "dark";
+  try { saved = localStorage.getItem("koa_theme") || "dark"; } catch (e) { /* ignore */ }
+  applyTheme(saved);
+})();
+$("theme-toggle")?.addEventListener("click", () => {
+  const current = document.documentElement.getAttribute("data-theme") || "dark";
+  const next = current === "dark" ? "light" : "dark";
+  applyTheme(next);
+  try { localStorage.setItem("koa_theme", next); } catch (e) { /* ignore */ }
+});
+
+/* ========================= View switching ========================= */
 const viewNames = ["analysis", "causal"];
-
 function openView(name) {
   viewNames.forEach((view) => {
     const element = $("view-" + view);
@@ -10,13 +42,17 @@ function openView(name) {
   document.querySelectorAll(".nav").forEach((button) => {
     button.classList.toggle("active", button.dataset.view === name);
   });
-  window.scrollTo({ top: 0, behavior: "smooth" });
+  window.scrollTo({ top: 0, behavior: prefersReducedMotion ? "auto" : "smooth" });
+  if (name === "causal" && !window.__causalLoaded) {
+    window.__causalLoaded = true;
+    loadCausalInsights();
+  }
 }
-
 document.querySelectorAll(".nav").forEach((button) => {
   button.addEventListener("click", () => openView(button.dataset.view));
 });
 
+/* ========================= Toast ========================= */
 function toast(message) {
   const element = $("toast");
   if (!element) return;
@@ -26,126 +62,347 @@ function toast(message) {
   window.__toastTimer = setTimeout(() => { element.style.display = "none"; }, 3200);
 }
 
-let selectedImageUrl = null;
+/* ========================= Zoom modal ========================= */
+function openZoom(src, alt) {
+  const modal = $("zoom-modal");
+  const img = $("modal-img");
+  if (!modal || !img) return;
+  img.src = src;
+  img.alt = alt || "Enlarged view";
+  modal.classList.remove("hidden");
+}
+function closeZoom() {
+  $("zoom-modal")?.classList.add("hidden");
+  if ($("modal-img")) $("modal-img").src = "";
+}
+$("modal-close")?.addEventListener("click", closeZoom);
+$("zoom-modal")?.addEventListener("click", (e) => { if (e.target.id === "zoom-modal") closeZoom(); });
+document.addEventListener("keydown", (e) => { if (e.key === "Escape") closeZoom(); });
 
-// --- X-ray selection and local preview ---
-$("xray-input")?.addEventListener("change", (event) => {
-  const file = event.target.files?.[0];
+/* ========================= X-ray selection (upload / drag-drop / demo) ========================= */
+let selectedImageUrl = null;
+let selectedFile = null;
+
+function acceptFile(file) {
   if (!file) return;
   if (!["image/png", "image/jpeg"].includes(file.type)) {
     toast("Choose a PNG or JPEG image.");
-    event.target.value = "";
     return;
   }
   if (selectedImageUrl) URL.revokeObjectURL(selectedImageUrl);
+  selectedFile = file;
   selectedImageUrl = URL.createObjectURL(file);
   if ($("xray-preview")) $("xray-preview").src = selectedImageUrl;
   if ($("image-name")) $("image-name").textContent = file.name;
   $("image-view")?.classList.remove("hidden");
   $("empty-image")?.classList.add("hidden");
-  toast("Image preview opened locally. No prediction has been run yet.");
+  resetResults();
+  toast("Image loaded. Run the assessment when ready.");
+}
+
+$("xray-input")?.addEventListener("change", (event) => {
+  acceptFile(event.target.files?.[0]);
+});
+
+const dropzone = $("dropzone");
+["dragenter", "dragover"].forEach((evt) => {
+  dropzone?.addEventListener(evt, (e) => { e.preventDefault(); dropzone.classList.add("drag-over"); });
+});
+["dragleave", "drop"].forEach((evt) => {
+  dropzone?.addEventListener(evt, (e) => { e.preventDefault(); dropzone.classList.remove("drag-over"); });
+});
+dropzone?.addEventListener("drop", (e) => {
+  const file = e.dataTransfer?.files?.[0];
+  if (file) acceptFile(file);
 });
 
 $("remove-image")?.addEventListener("click", () => {
   if (selectedImageUrl) URL.revokeObjectURL(selectedImageUrl);
   selectedImageUrl = null;
+  selectedFile = null;
   if ($("xray-input")) $("xray-input").value = "";
   $("xray-preview")?.removeAttribute("src");
   $("image-view")?.classList.add("hidden");
   $("empty-image")?.classList.remove("hidden");
+  resetResults();
 });
 
-const GRADE_LABELS = ["KL 0 — None", "KL 1 — Doubtful", "KL 2 — Mild", "KL 3 — Moderate", "KL 4 — Severe"];
+$("xray-preview")?.addEventListener("click", () => {
+  if (selectedImageUrl) openZoom(selectedImageUrl, "Selected knee X-ray, enlarged");
+});
 
+/* Demo samples: one real test image per KL grade, so the demo works with no file hunting. */
+const DEMO_SAMPLES = [
+  { grade: 0, file: "sample_kl0.png", label: "KL0" },
+  { grade: 1, file: "sample_kl1.png", label: "KL1" },
+  { grade: 2, file: "sample_kl2.png", label: "KL2" },
+  { grade: 3, file: "sample_kl3.png", label: "KL3" },
+  { grade: 4, file: "sample_kl4.png", label: "KL4" },
+];
+(function buildDemoRow() {
+  const row = $("demo-row");
+  if (!row) return;
+  DEMO_SAMPLES.forEach((sample) => {
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "demo-chip";
+    btn.innerHTML = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M5 3l14 9-14 9V3z"/></svg> ${sample.label} sample`;
+    btn.addEventListener("click", async () => {
+      try {
+        const resp = await fetch(`/static/samples/${sample.file}`);
+        const blob = await resp.blob();
+        const file = new File([blob], sample.file, { type: "image/png" });
+        acceptFile(file);
+      } catch (e) {
+        toast("Could not load the sample image.");
+      }
+    });
+    row.appendChild(btn);
+  });
+})();
+
+function resetResults() {
+  $("download-report-btn")?.setAttribute("disabled", "true");
+  $("progress-list")?.classList.add("hidden");
+  if ($("progress-list")) $("progress-list").innerHTML = "";
+}
+
+/* ========================= Grade reference data ========================= */
+const GRADE_LABELS = ["None", "Doubtful", "Minimal", "Moderate", "Severe"];
+const GRADE_DESCRIPTIONS = [
+  "No radiographic signs of osteoarthritis.",
+  "Doubtful — a minute osteophyte of uncertain significance.",
+  "Minimal — definite osteophytes; joint space narrowing possible.",
+  "Moderate — multiple osteophytes, definite joint-space narrowing, some sclerosis.",
+  "Severe — large osteophytes, marked joint-space narrowing, severe sclerosis.",
+];
+const GRADE_COLOR_VARS = ["--kl0", "--kl1", "--kl2", "--kl3", "--kl4"];
+const MEMBER_LABELS = {
+  kl_final: "ConvNeXt (kl_final)",
+  kl_final_seed7: "ConvNeXt (kl_final)",
+  hybrid1: "Transformer hybrid",
+  kneenext_seed42: "KneeNeXt",
+  kneenext_seed7: "KneeNeXt",
+};
+function memberLabel(key) { return MEMBER_LABELS[key] || key; }
+
+/* ========================= Analysis progress animation (visual only) ========================= */
+const PROGRESS_STEPS = [
+  "Enhancing contrast (CLAHE)",
+  "Running model A",
+  "Running model B",
+  "Combining results",
+  "Generating explanations",
+  "Causal analysis",
+];
+function runProgressAnimation() {
+  const list = $("progress-list");
+  if (!list) return { finish: () => {} };
+  list.classList.remove("hidden");
+  list.innerHTML = PROGRESS_STEPS.map((label, i) =>
+    `<li data-i="${i}"><span class="dot"></span><span>${label}</span></li>`).join("");
+  const items = Array.from(list.children);
+  let i = 0;
+  function tick() {
+    if (i > 0) items[i - 1].classList.replace("active", "done");
+    if (i < items.length - 1) {
+      items[i].classList.add("active");
+      i += 1;
+      timer = setTimeout(tick, prefersReducedMotion ? 0 : 480);
+    } else {
+      items[i].classList.add("active");
+    }
+  }
+  let timer = setTimeout(tick, 0);
+  $("image-view")?.classList.add("scanning");
+  return {
+    finish(success) {
+      clearTimeout(timer);
+      items.forEach((el) => { el.classList.remove("active"); el.classList.add(success ? "done" : "active"); });
+      $("image-view")?.classList.remove("scanning");
+    },
+  };
+}
+
+/* ========================= Rendering: prediction ========================= */
 function renderPrediction(data) {
   const panel = $("prediction-panel");
   if (!panel) return;
   panel.replaceChildren();
+  panel.classList.remove("prediction-empty");
 
-  const gradeIcon = document.createElement("div");
-  gradeIcon.className = "grade-icon";
-  gradeIcon.textContent = `KL ${data.grade}`;
+  const top = document.createElement("div");
+  top.className = "result-top";
 
-  const heading = document.createElement("b");
-  heading.textContent = GRADE_LABELS[data.grade] || `Grade ${data.grade}`;
+  const badge = document.createElement("div");
+  badge.className = "grade-badge";
+  badge.style.borderColor = `var(${GRADE_COLOR_VARS[data.grade]})`;
+  badge.innerHTML = `<span class="num">${data.grade}</span><span class="lbl">KL GRADE</span>`;
 
-  const confLine = document.createElement("p");
-  confLine.textContent = `Confidence: ${(data.confidence * 100).toFixed(1)}%  |  Model: ${data.model_used} (${data.model_members.join(" + ")})`;
+  const ring = document.createElement("div");
+  ring.className = "conf-ring-wrap";
+  const circumference = 2 * Math.PI * 36;
+  ring.innerHTML = `
+    <svg viewBox="0 0 80 80">
+      <circle class="ring-bg" cx="40" cy="40" r="36"/>
+      <circle class="ring-fg" cx="40" cy="40" r="36" style="stroke-dasharray:${circumference};stroke-dashoffset:${circumference}"/>
+    </svg>
+    <div class="ring-label">${Math.round(data.confidence * 100)}%</div>`;
 
-  const uncertainty = document.createElement("p");
-  uncertainty.className = data.uncertainty.flag ? "warn-text" : "ok-text";
-  uncertainty.textContent = `Uncertainty: ${data.uncertainty.message}`;
+  const text = document.createElement("div");
+  text.className = "result-text";
+  const memberNames = (data.model_members || []).map(memberLabel);
+  const modelLine = data.model_used === "ensemble"
+    ? `Final model: ensemble of ${memberNames.join(" and ")}.`
+    : `Final model: ${memberNames[0] || "ConvNeXt (kl_final)"}.`;
+  text.innerHTML = `
+    <b>KL ${data.grade} — ${GRADE_LABELS[data.grade] || ""}</b>
+    <p class="grade-desc">${GRADE_DESCRIPTIONS[data.grade] || ""}</p>
+    <p class="model-line">${modelLine}</p>`;
 
-  const probContainer = document.createElement("div");
-  probContainer.className = "grade-probabilities";
-  Object.entries(data.probabilities).forEach(([label, value]) => {
-    const pct = Math.max(0, Math.min(100, value * 100));
-    const row = document.createElement("div");
-    row.style.margin = "8px 0";
-    const line = document.createElement("div");
-    line.style.display = "flex"; line.style.justifyContent = "space-between"; line.style.gap = "12px";
-    const l = document.createElement("span"); l.textContent = label;
-    const n = document.createElement("b"); n.textContent = `${pct.toFixed(2)}%`;
-    line.append(l, n);
-    const track = document.createElement("div");
-    track.style.cssText = "height:6px;background:#e5e7eb;border-radius:5px;overflow:hidden";
-    const fill = document.createElement("div");
-    fill.style.cssText = `height:100%;width:${pct}%;background:#3976c5`;
-    track.appendChild(fill);
-    row.append(line, track);
-    probContainer.appendChild(row);
+  top.append(badge, ring, text);
+  panel.appendChild(top);
+
+  requestAnimationFrame(() => {
+    const offset = circumference * (1 - data.confidence);
+    const fg = ring.querySelector(".ring-fg");
+    if (fg) fg.style.strokeDashoffset = String(offset);
   });
 
-  panel.append(gradeIcon, heading, confLine, uncertainty, probContainer);
+  const scale = document.createElement("div");
+  scale.className = "severity-scale";
+  scale.innerHTML = `
+    <div class="severity-track"><span></span><span></span><span></span><span></span><span></span></div>
+    <div class="severity-labels"><span>KL0</span><span>KL1</span><span>KL2</span><span>KL3</span><span>KL4</span></div>
+    <div class="severity-marker" id="severity-marker"></div>`;
+  panel.appendChild(scale);
+  requestAnimationFrame(() => {
+    const marker = scale.querySelector("#severity-marker");
+    if (marker) marker.style.left = `${(data.grade + 0.5) * 20}%`;
+  });
+
+  const bars = document.createElement("div");
+  bars.className = "prob-bars";
+  Object.entries(data.probabilities).forEach(([label, value], idx) => {
+    const pct = Math.max(0, Math.min(100, value * 100));
+    const row = document.createElement("div");
+    row.className = "prob-row";
+    row.innerHTML = `<span class="k-label">${label}</span><div class="track"><div class="fill" style="background:var(${GRADE_COLOR_VARS[idx]})"></div></div><span class="pct">${pct.toFixed(1)}%</span>`;
+    bars.appendChild(row);
+    requestAnimationFrame(() => {
+      const fill = row.querySelector(".fill");
+      if (fill) fill.style.width = `${pct}%`;
+    });
+  });
+  panel.appendChild(bars);
+
+  const banner = document.createElement("div");
+  const isUncertain = !!data.uncertainty?.flag;
+  banner.className = `uncertainty-banner ${isUncertain ? "warn" : "ok"}`;
+  banner.innerHTML = isUncertain
+    ? `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2 1 21h22L12 2z"/><path d="M12 9v5M12 17v.01"/></svg><span>Low confidence — refer to a radiologist.</span>`
+    : `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M20 6 9 17l-5-5"/></svg><span>Confident prediction.</span>`;
+  panel.appendChild(banner);
 
   const tag = $("model-used-tag");
-  if (tag) { tag.textContent = "RESEARCH OUTPUT"; tag.classList.remove("muted"); }
+  if (tag) { tag.textContent = "ASSESSED"; tag.classList.remove("muted"); }
+  const hint = $("model-line-hint");
+  if (hint) hint.textContent = modelLine;
+
+  $("download-report-btn")?.removeAttribute("disabled");
 }
 
-function imgFigure(title, src) {
-  const figure = document.createElement("figure");
-  figure.style.margin = "0"; figure.style.minWidth = "0";
-  const heading = document.createElement("b");
-  heading.textContent = title; heading.style.display = "block"; heading.style.marginBottom = "8px";
-  const image = document.createElement("img");
-  image.src = src; image.style.width = "100%"; image.style.borderRadius = "8px"; image.style.background = "#f1f5f9";
-  figure.append(heading, image);
-  return figure;
-}
-
+/* ========================= Rendering: explainability viewer ========================= */
 function renderXai(data) {
   const el = $("xai-panel");
-  if (!el) return;
+  if (!el || !selectedImageUrl) return;
   el.replaceChildren();
-  const grid = document.createElement("div");
-  grid.style.display = "grid"; grid.style.gridTemplateColumns = "repeat(auto-fit, minmax(200px, 1fr))"; grid.style.gap = "14px";
-  if (data.gradcam_png_base64) grid.appendChild(imgFigure("Grad-CAM (bug-fixed)", `data:image/png;base64,${data.gradcam_png_base64}`));
-  if (data.integrated_gradients_png_base64) grid.appendChild(imgFigure("Integrated Gradients (kl_final)", `data:image/png;base64,${data.integrated_gradients_png_base64}`));
-  el.appendChild(grid);
+
+  const methods = [];
+  if (data.integrated_gradients_png_base64) methods.push({ key: "ig", label: "Integrated Gradients", src: `data:image/png;base64,${data.integrated_gradients_png_base64}` });
+  if (data.gradcam_png_base64) methods.push({ key: "cam", label: "Grad-CAM", src: `data:image/png;base64,${data.gradcam_png_base64}` });
+  if (methods.length === 0) {
+    el.innerHTML = `<div class="empty-state"><h3>No explanation available</h3><p>Explanation images could not be generated for this image.</p></div>`;
+    return;
+  }
+
+  const tabs = document.createElement("div");
+  tabs.className = "xai-tabs";
+  methods.forEach((m, i) => {
+    const tab = document.createElement("button");
+    tab.type = "button";
+    tab.className = `xai-tab ${i === 0 ? "active" : ""}`;
+    tab.textContent = m.label;
+    tab.dataset.key = m.key;
+    tabs.appendChild(tab);
+  });
+  el.appendChild(tabs);
+
+  const viewer = document.createElement("div");
+  viewer.className = "xai-viewer";
+  const baseImg = document.createElement("img");
+  baseImg.className = "layer base";
+  baseImg.src = selectedImageUrl;
+  baseImg.alt = "Original knee X-ray";
+  const overlayImg = document.createElement("img");
+  overlayImg.className = "layer overlay";
+  overlayImg.alt = "Explanation heatmap overlay";
+  overlayImg.src = methods[0].src;
+  overlayImg.style.opacity = "0.85";
+  viewer.append(baseImg, overlayImg);
+  el.appendChild(viewer);
+
+  [baseImg, overlayImg].forEach((img) => img.addEventListener("click", () => openZoom(overlayImg.src, overlayImg.alt)));
+
+  const opacityRow = document.createElement("div");
+  opacityRow.className = "xai-opacity-row";
+  opacityRow.innerHTML = `<label for="xai-opacity">Heatmap opacity</label><input type="range" id="xai-opacity" min="0" max="100" value="85" aria-label="Heatmap overlay opacity">`;
+  el.appendChild(opacityRow);
+  opacityRow.querySelector("input").addEventListener("input", (e) => {
+    overlayImg.style.opacity = String(Number(e.target.value) / 100);
+  });
+
+  tabs.querySelectorAll(".xai-tab").forEach((tab) => {
+    tab.addEventListener("click", () => {
+      tabs.querySelectorAll(".xai-tab").forEach((t) => t.classList.remove("active"));
+      tab.classList.add("active");
+      const m = methods.find((mm) => mm.key === tab.dataset.key);
+      if (m) overlayImg.src = m.src;
+    });
+  });
+
   const caption = document.createElement("p");
-  caption.className = "hint";
-  caption.textContent = "Exploratory visualizations of regions influencing the model output - not proof of clinical reasoning.";
+  caption.className = "xai-caption";
+  caption.textContent = "Integrated Gradients is our main explanation; Grad-CAM is a visual aid. Both show regions that most influenced the prediction — not proof of clinical reasoning.";
   el.appendChild(caption);
 }
 
+/* ========================= Rendering: similar cases ========================= */
 function renderSimilarCases(data) {
   const el = $("similar-cases-panel");
   if (!el) return;
   el.replaceChildren();
   if (!data.similar_cases || data.similar_cases.length === 0) {
-    el.innerHTML = "<p class=\"hint\">No similar cases found.</p>";
+    el.innerHTML = `<div class="empty-state"><h3>No similar cases found</h3><p>The training-feature cache may be missing.</p></div>`;
     return;
   }
-  const list = document.createElement("ul");
+  const grid = document.createElement("div");
+  grid.className = "case-grid";
   data.similar_cases.forEach((c) => {
-    const li = document.createElement("li");
-    li.textContent = `KL${c.grade} — ${c.path.split(/[\\/]/).pop()} (cosine similarity ${c.similarity.toFixed(3)})`;
-    list.appendChild(li);
+    const card = document.createElement("div");
+    card.className = "case-card";
+    const thumbSrc = c.thumbnail_png_base64 ? `data:image/png;base64,${c.thumbnail_png_base64}` : null;
+    card.innerHTML = `
+      ${thumbSrc ? `<img src="${thumbSrc}" alt="Training case, KL grade ${c.grade}">` : `<div class="empty-image" style="height:92px"><span>No preview</span></div>`}
+      <div class="meta"><b>KL ${c.grade} — ${GRADE_LABELS[c.grade]}</b><span>${(c.similarity * 100).toFixed(1)}% similar</span></div>`;
+    if (thumbSrc) card.addEventListener("click", () => openZoom(thumbSrc, `Similar training case, KL grade ${c.grade}`));
+    grid.appendChild(card);
   });
-  el.appendChild(list);
+  el.appendChild(grid);
 }
 
-function renderCausalPanel(panel) {
+/* ========================= Rendering: causal panel (with live BMI slider) ========================= */
+function renderCausalPanel(panel, baseAge, baseFamilyHistory) {
   const el = $("causal-panel-result");
   if (!el) return;
   el.replaceChildren();
@@ -158,38 +415,65 @@ function renderCausalPanel(panel) {
     return;
   }
   if (!panel.available) {
-    const p = document.createElement("p");
-    p.className = "hint";
-    p.textContent = panel.message || "Causal panel not available.";
-    el.appendChild(p);
+    el.innerHTML = `<div class="empty-state"><h3>Add age and BMI</h3><p>${panel.message || "Provide both for a per-factor causal breakdown."}</p></div>`;
     return;
   }
 
+  const summary = document.createElement("div");
+  summary.className = "causal-block";
   const lines = [];
-  lines.push(`This patient: age ${panel.age}, BMI ${panel.bmi} → ${panel.obese ? "obese" : "not obese"} (threshold 30).`);
-  lines.push(`Expected KL grade: ${panel.expected_kl.value.toFixed(2)}${panel.expected_kl.clipped ? " (clipped to the valid 0-4 range)" : ""}.`);
+  lines.push(`<div class="stat-line"><span>This patient</span><b>${panel.obese ? "Obese" : "Not obese"} (BMI ${panel.bmi})</b></div>`);
+  lines.push(`<div class="stat-line"><span>Expected KL grade for this profile</span><b>${panel.expected_kl.value.toFixed(2)}${panel.expected_kl.clipped ? " (clipped)" : ""}</b></div>`);
   if (panel.individual_obesity_effect) {
     const e = panel.individual_obesity_effect;
-    lines.push(`Individual obesity effect (causal forest): ${e.value >= 0 ? "+" : ""}${e.value.toFixed(2)} KL grade points (95% CI [${e.ci_low.toFixed(2)}, ${e.ci_high.toFixed(2)}]).`);
+    lines.push(`<div class="stat-line"><span>This patient's individual obesity effect</span><b>${e.value >= 0 ? "+" : ""}${e.value.toFixed(2)} KL pts</b></div>`);
   }
+  summary.innerHTML = `<h4>Individual estimate</h4>${lines.join("")}`;
+  el.appendChild(summary);
+
   if (panel.knee_injury) {
-    lines.push(`Knee injury (${panel.knee_injury.label}): +${panel.knee_injury.linear_regression_ate.toFixed(2)} to +${panel.knee_injury.propensity_score_matching_ate.toFixed(2)} KL grade points.`);
+    const injury = document.createElement("div");
+    injury.className = "causal-block";
+    injury.innerHTML = `<h4>Knee injury (association, not a demonstrated cause)</h4>
+      <div class="stat-line"><span>Regression adjustment</span><b>+${panel.knee_injury.linear_regression_ate.toFixed(2)} KL pts</b></div>
+      <div class="stat-line"><span>Propensity score matching</span><b>+${panel.knee_injury.propensity_score_matching_ate.toFixed(2)} KL pts</b></div>`;
+    el.appendChild(injury);
   }
 
-  const ul = document.createElement("ul");
-  lines.forEach((t) => { const li = document.createElement("li"); li.textContent = t; ul.appendChild(li); });
-  el.appendChild(ul);
+  const whatif = document.createElement("div");
+  whatif.className = "causal-block";
+  whatif.innerHTML = `<h4>BMI what-if</h4>
+    <div class="slider-row">
+      <input type="range" id="bmi-whatif-slider" min="16.9" max="48.7" step="0.1" value="${panel.bmi}" aria-label="What-if BMI slider">
+      <span class="slider-readout" id="bmi-whatif-readout">${panel.bmi}</span>
+    </div>
+    <div class="whatif-result" id="bmi-whatif-result">Expected KL grade at BMI ${panel.bmi}: ${panel.expected_kl.value.toFixed(2)}</div>`;
+  el.appendChild(whatif);
 
-  if (panel.bmi_whatif && panel.bmi_whatif.length) {
-    const h = document.createElement("b"); h.textContent = "BMI what-if (expected KL grade):";
-    const ul2 = document.createElement("ul");
-    panel.bmi_whatif.forEach((w) => {
-      const li = document.createElement("li");
-      li.textContent = `BMI ${w.bmi}: ${w.expected_kl.toFixed(2)}`;
-      ul2.appendChild(li);
-    });
-    el.append(h, ul2);
-  }
+  const slider = whatif.querySelector("#bmi-whatif-slider");
+  const readout = whatif.querySelector("#bmi-whatif-readout");
+  const resultBox = whatif.querySelector("#bmi-whatif-result");
+  let debounceTimer = null;
+  slider.addEventListener("input", () => {
+    const bmiVal = Number(slider.value);
+    readout.textContent = bmiVal.toFixed(1);
+    clearTimeout(debounceTimer);
+    debounceTimer = setTimeout(async () => {
+      try {
+        const resp = await fetch("/api/whatif", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ age: baseAge, bmi: bmiVal, family_history: baseFamilyHistory }),
+        });
+        const d = await resp.json();
+        if (d.ok) {
+          resultBox.textContent = `Expected KL grade at BMI ${bmiVal.toFixed(1)}: ${d.expected_kl.value.toFixed(2)}${d.expected_kl.clipped ? " (clipped)" : ""}`;
+        } else if (d.refused) {
+          resultBox.textContent = d.messages.join(" ");
+        }
+      } catch (e) { /* keep showing the last good value */ }
+    }, 180);
+  });
 
   const caveat = document.createElement("div");
   caveat.className = "small-warning";
@@ -197,17 +481,17 @@ function renderCausalPanel(panel) {
   el.appendChild(caveat);
 }
 
-// --- Run assessment ---
+/* ========================= Run assessment ========================= */
 $("analyze-btn")?.addEventListener("click", async () => {
-  const file = $("xray-input")?.files?.[0];
-  if (!file) { toast("Select an X-ray first."); return; }
+  if (!selectedFile) { toast("Select an X-ray first."); return; }
 
   const button = $("analyze-btn");
   button.disabled = true;
   if ($("analysis-status")) $("analysis-status").textContent = "Running the model…";
+  const progress = runProgressAnimation();
 
   const formData = new FormData();
-  formData.append("xray", file);
+  formData.append("xray", selectedFile);
   const age = $("age")?.value; if (age) formData.append("age", age);
   const bmi = $("bmi")?.value; if (bmi) formData.append("bmi", bmi);
   const fh = $("family_history")?.value; if (fh) formData.append("family_history", fh);
@@ -218,13 +502,16 @@ $("analyze-btn")?.addEventListener("click", async () => {
     if (!response.ok || !data.ok) {
       throw new Error(data.message || `Assessment failed (HTTP ${response.status}).`);
     }
+    progress.finish(true);
     renderPrediction(data);
     renderXai(data);
     renderSimilarCases(data);
-    renderCausalPanel(data.causal_panel);
+    renderCausalPanel(data.causal_panel, age ? Number(age) : null, fh || null);
+    window.__lastResult = data;
     if ($("analysis-status")) $("analysis-status").textContent = `Done. ${data.disclaimer}`;
     toast("Assessment completed.");
   } catch (error) {
+    progress.finish(false);
     if ($("analysis-status")) $("analysis-status").textContent = error.message || "Assessment failed.";
     toast(error.message || "Assessment failed.");
   } finally {
@@ -232,32 +519,89 @@ $("analyze-btn")?.addEventListener("click", async () => {
   }
 });
 
-// --- Historical causal insights tab ---
-async function loadCausalData() {
-  const container = $("causal-results");
-  if (!container) return;
-  container.textContent = "Loading…";
+/* ========================= Download report (print to PDF) ========================= */
+$("download-report-btn")?.addEventListener("click", () => window.print());
+
+/* ========================= Causal insights page ========================= */
+const METHOD_LABELS = {
+  propensity_score_matching: "Propensity score matching",
+  linear_regression: "Regression adjustment",
+  random_common_cause: "Random common cause",
+  placebo_treatment_refuter: "Placebo treatment",
+  data_subset_refuter: "Data subset",
+};
+function readable(name) { return METHOD_LABELS[name] || name; }
+
+async function loadCausalInsights() {
+  const methodsEl = $("causal-methods");
+  const ciEl = $("ci-bars");
+  const robustEl = $("causal-robustness");
+  if (methodsEl) methodsEl.textContent = "Loading…";
   try {
-    const response = await fetch("/api/causal", { cache: "no-store" });
-    const data = await response.json().catch(() => ({}));
-    if (!response.ok || !data.ok) throw new Error(data.error || "Causal API request failed.");
-    container.replaceChildren();
-    (data.causal_estimates || [])
-      .filter((r) => r.Analysis === "primary_one_knee" && r.Outcome === "KL_grade (0-4)")
-      .forEach((row) => {
+    const resp = await fetch("/api/causal_insights", { cache: "no-store" });
+    const data = await resp.json();
+    if (!resp.ok || !data.ok) throw new Error("Could not load causal insights.");
+
+    if (methodsEl) {
+      methodsEl.replaceChildren();
+      data.methods.forEach((m) => {
         const card = document.createElement("div");
-        card.className = "effect-card";
-        const label = document.createElement("span"); label.textContent = row.Method;
-        const strong = document.createElement("strong"); strong.textContent = `+${Number(row.ATE).toFixed(4)}`;
-        const small = document.createElement("small"); small.textContent = `Estimated effect on KL grade; n = ${row.N}`;
-        card.append(label, strong, small);
-        container.appendChild(card);
+        card.className = "method-card";
+        card.innerHTML = `<b>+${m.ate.toFixed(3)}</b><span>${m.label}</span><small>KL grade points${m.n ? `, n = ${m.n}` : ""}</small>`;
+        methodsEl.appendChild(card);
       });
+    }
+
+    if (ciEl) {
+      ciEl.replaceChildren();
+      ciEl.style.display = "block";
+      const wrap = document.createElement("div");
+      data.age_group_ci.forEach((row) => {
+        const lo = row.ci_low, hi = row.ci_high, est = row.estimate;
+        const scaleMax = 0.8;
+        const pct = (v) => Math.max(0, Math.min(100, (v / scaleMax) * 100));
+        const line = document.createElement("div");
+        line.className = "ci-bar-row";
+        line.innerHTML = `
+          <span class="name">${row.label.replace(" (adj. age+family history)", "")}</span>
+          <div class="ci-bar-track">
+            <div class="ci-bar-fill" style="left:${pct(lo)}%;width:${pct(hi) - pct(lo)}%"></div>
+            <div class="ci-bar-point" style="left:${pct(est)}%"></div>
+          </div>`;
+        wrap.appendChild(line);
+      });
+      ciEl.appendChild(wrap);
+      const caption = document.createElement("p");
+      caption.className = "hint";
+      caption.style.marginTop = "6px";
+      caption.textContent = "Obesity effect on KL grade by age group, with 95% confidence intervals.";
+      ciEl.appendChild(caption);
+    }
+
+    if (robustEl) {
+      robustEl.replaceChildren();
+      if (data.evalue.point) {
+        const card = document.createElement("div");
+        card.className = "method-card";
+        card.innerHTML = `<b>${data.evalue.point.toFixed(2)}</b><span>E-value</span><small>An unmeasured confounder would need at least this strong an association with both obesity and KL grade to explain the effect away (CI-bound E-value: ${data.evalue.ci_bound?.toFixed(2) ?? "—"}).</small>`;
+        robustEl.appendChild(card);
+      }
+      const refCard = document.createElement("div");
+      refCard.className = "method-card";
+      refCard.innerHTML = `<b>Stable</b><span>Refutation checks</span><small>${data.refuters.map((r) => `${readable(r.name)}: ${r.new_effect.toFixed(3)}`).join(" · ")}</small>`;
+      robustEl.appendChild(refCard);
+
+      if (data.injury.linear_regression !== undefined) {
+        const injuryCard = document.createElement("div");
+        injuryCard.className = "method-card";
+        injuryCard.innerHTML = `<b>+${data.injury.propensity_score_matching.toFixed(2)}</b><span>Knee injury (association)</span><small>Regression adjustment: +${data.injury.linear_regression.toFixed(2)} KL pts. Self-reported history; not a demonstrated cause.</small>`;
+        robustEl.appendChild(injuryCard);
+      }
+    }
   } catch (error) {
-    container.textContent = error.message || "Could not load causal results.";
+    if (methodsEl) methodsEl.textContent = error.message || "Could not load causal insights.";
   }
 }
-if ($("causal-results")) loadCausalData();
 
 window.addEventListener("beforeunload", () => {
   if (selectedImageUrl) URL.revokeObjectURL(selectedImageUrl);
