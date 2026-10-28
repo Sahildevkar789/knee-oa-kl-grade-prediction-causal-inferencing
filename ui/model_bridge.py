@@ -28,6 +28,7 @@ from predict_extended import (load_prediction_setup, classify_rgb, nearest_cases
                               to_tensor, MODEL_SPECS, build_model)
 from causal_model import load_or_fit_causal_models, out_of_range_messages, contribution_age, \
     contribution_bmi, contribution_famkr, expected_kl
+from jsw_analysis import estimate_knee_jsw
 
 CAUSAL_FOREST_PATH = os.path.join(ROOT, "outputs", "extended", "causal", "causal_forest_model.pkl")
 INJURY_ESTIMATES_PATH = os.path.join(ROOT, "outputs", "extended", "causal", "injury_estimates.csv")
@@ -50,8 +51,11 @@ def _ensure_loaded():
     causal_models = load_or_fit_causal_models()
     causal_forest = None
     if os.path.exists(CAUSAL_FOREST_PATH):
-        with open(CAUSAL_FOREST_PATH, "rb") as f:
-            causal_forest = pickle.load(f)
+        try:
+            with open(CAUSAL_FOREST_PATH, "rb") as f:
+                causal_forest = pickle.load(f)
+        except Exception:
+            causal_forest = None
     injury_df = None
     if os.path.exists(INJURY_ESTIMATES_PATH):
         import pandas as pd
@@ -155,7 +159,7 @@ def _build_causal_panel(age, bmi, family_history):
     return panel
 
 
-def analyze(image_path, age=None, bmi=None, family_history=None):
+def analyze(image_path, age=None, bmi=None, family_history=None, side="R"):
     """Runs the full prediction pipeline on one image and returns a plain (JSON-serializable)
     dict. age/bmi: float or None. family_history: "yes"/"no"/True/False/None. Never raises on
     a missing/invalid causal profile - that just narrows what the causal panel can report;
@@ -183,6 +187,13 @@ def analyze(image_path, age=None, bmi=None, family_history=None):
     neighbors = nearest_cases(clahe224, s["kl_final_for_neighbors"], device) or []
     entropy, unc_thresh, is_uncertain = uncertainty_info(probs)
 
+    # High-precision Joint Space Width (JSW) and gap measurement
+    jsw_data = None
+    try:
+        jsw_data = estimate_knee_jsw(img, side_code=side or "R")
+    except Exception as e:
+        jsw_data = None
+
     return {
         "grade": int(grade),
         "grade_label": ["No osteoarthritis", "Doubtful", "Minimal", "Moderate", "Severe"][int(grade)],
@@ -198,5 +209,6 @@ def analyze(image_path, age=None, bmi=None, family_history=None):
         "integrated_gradients_png_base64": ig_png,
         "similar_cases": [{"path": p, "grade": int(g), "similarity": float(sim)} for p, g, sim in neighbors],
         "causal_panel": _build_causal_panel(age, bmi, family_history),
+        "jsw": jsw_data,
         "disclaimer": DISCLAIMER,
     }

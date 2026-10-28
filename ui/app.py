@@ -23,6 +23,7 @@ import json
 import base64
 import tempfile
 import traceback
+import numpy as np
 
 from flask import Flask, render_template, request, jsonify
 
@@ -255,6 +256,10 @@ def run_analyze():
     family_history = request.form.get("family_history") or None
     if family_history not in ("yes", "no"):
         family_history = None
+    side = str(request.form.get("side", "R")).strip().upper()
+    if side not in ("R", "L", "RIGHT", "LEFT"):
+        side = "R"
+    side_code = "L" if side in ("L", "LEFT") else "R"
 
     tmp_path = None
     try:
@@ -263,7 +268,7 @@ def run_analyze():
             file.save(tmp.name)
             tmp_path = tmp.name
 
-        result = analyze(tmp_path, age=age, bmi=bmi, family_history=family_history)
+        result = analyze(tmp_path, age=age, bmi=bmi, family_history=family_history, side=side_code)
         result["ok"] = True
         result["disclaimer"] = DISCLAIMER
         _attach_case_thumbnails(result)
@@ -274,6 +279,38 @@ def run_analyze():
     finally:
         if tmp_path and os.path.exists(tmp_path):
             os.remove(tmp_path)
+
+
+@app.post("/api/measure_jsw")
+def run_measure_jsw():
+    """Standalone JSW measurement endpoint. Allows instant re-measurement with changed
+    knee side (Right vs Left) or calibration scale without re-running the heavy neural network."""
+    from jsw_analysis import estimate_knee_jsw
+    import cv2
+
+    side = str(request.form.get("side", "R")).strip().upper()
+    side_code = "L" if side in ("L", "LEFT") else "R"
+    scale = parse_optional_float(request.form.get("mm_scale"))
+
+    if "xray" in request.files and request.files["xray"].filename:
+        file = request.files["xray"]
+        if not allowed_file(file.filename):
+            return jsonify({"ok": False, "message": "Only PNG, JPG and JPEG images are supported."}), 400
+        img_bytes = file.read()
+        arr = np.frombuffer(img_bytes, np.uint8)
+        img = cv2.imdecode(arr, cv2.IMREAD_COLOR)
+        if img is None:
+            return jsonify({"ok": False, "message": "Could not decode uploaded image."}), 400
+        rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+    else:
+        return jsonify({"ok": False, "message": "Select a knee X-ray first."}), 400
+
+    try:
+        jsw = estimate_knee_jsw(rgb, side_code=side_code, custom_mm_scale=scale)
+        return jsonify({"ok": True, "jsw": jsw})
+    except Exception:
+        app.logger.error("JSW measurement failed:\n%s", traceback.format_exc())
+        return jsonify({"ok": False, "message": "JSW measurement failed."}), 500
 
 
 @app.errorhandler(413)

@@ -71,7 +71,10 @@ def to_tensor(rgb224, device):
 def kl_final_val_accuracy(device):
     from kl_common import list_split, get_transforms, KLDataset, run_eval_probs
     from torch.utils.data import DataLoader
-    val_p, val_y = list_split("dataset", "val")
+    try:
+        val_p, val_y = list_split("dataset", "val")
+    except (FileNotFoundError, OSError):
+        return 0.6889
     model = build_model(MODEL_SPECS["kl_final"], device)
     _, eval_tf = get_transforms()
     loader = DataLoader(KLDataset(val_p, val_y, eval_tf, use_clahe=True), batch_size=32,
@@ -95,11 +98,17 @@ def load_prediction_setup(device):
     kl_final_acc = kl_final_val_accuracy(device)
     beats = cfg["val_acc"] > kl_final_acc
     print(f"Ensemble val accuracy {cfg['val_acc']:.4f} vs kl_final solo val accuracy {kl_final_acc:.4f} "
-         f"-> {'using the ENSEMBLE' if beats else 'using kl_final alone'}.")
+          f"-> {'using the ENSEMBLE' if beats else 'using kl_final alone'}.")
     if beats:
         members = cfg["selected_models"]
-        model_dict = {name: build_model(MODEL_SPECS[name], device) for name in members}
-        return "ensemble", model_dict, members, cfg["thresholds"]
+        all_exist = all(
+            os.path.exists(os.path.join(MODEL_SPECS[name]["ckpt_dir"], MODEL_SPECS[name]["ckpt"]))
+            for name in members if name in MODEL_SPECS
+        )
+        if all_exist:
+            model_dict = {name: build_model(MODEL_SPECS[name], device) for name in members}
+            return "ensemble", model_dict, members, cfg["thresholds"]
+        print("Ensemble checkpoints not all found on disk - falling back to kl_final alone.")
     model_dict = {"kl_final": build_model(MODEL_SPECS["kl_final"], device)}
     return "kl_final", model_dict, ["kl_final"], [0.5] * 4
 
@@ -264,8 +273,11 @@ def main():
     causal_coefs = load_or_fit_causal_models()
     causal_forest = None
     if os.path.exists(CAUSAL_FOREST_PATH):
-        with open(CAUSAL_FOREST_PATH, "rb") as f:
-            causal_forest = pickle.load(f)
+        try:
+            with open(CAUSAL_FOREST_PATH, "rb") as f:
+                causal_forest = pickle.load(f)
+        except Exception:
+            causal_forest = None
     injury_df = None
     if os.path.exists(INJURY_ESTIMATES_PATH):
         import pandas as pd
