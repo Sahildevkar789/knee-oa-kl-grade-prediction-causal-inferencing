@@ -1,0 +1,96 @@
+﻿<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Knee OA Assessment System</title>
+  <link rel="stylesheet" href="/static/css/app.css">
+</head>
+<body>
+<div class="shell">
+  <aside class="sidebar">
+    <div class="brand"><div class="brand-icon">K<span>+</span></div><div><b>Knee OA</b><small>Assessment System</small></div></div>
+    <div class="side-label">RESEARCH WORKSPACE</div>
+    <nav>
+      <button class="nav active" data-view="analysis"><span>&#9635;</span> New assessment</button>
+      <button class="nav" data-view="causal"><span>&#9121;</span> Causal insights</button>
+    </nav>
+    <div class="sidebar-bottom"><div class="secure-dot"></div><div><b>Research prototype — not for clinical use.</b><small>No patient records are stored</small></div></div>
+  </aside>
+
+  <main>
+    <header class="topbar">
+      <div><div class="eyebrow">RESEARCH PROTOTYPE</div><h1>Knee Osteoarthritis Assessment</h1></div>
+    </header>
+
+    <section class="view" id="view-analysis">
+      <div class="welcome"><div><h2>New assessment</h2><p>Upload an X-ray and (optionally) patient details, then run the final project model - the same one <code>predict_extended.py</code> uses.</p></div><span class="pill warn">Research prototype — not for clinical use.</span></div>
+
+      <div class="card patient-card">
+        <div class="section-head"><div><h3>Patient details (optional)</h3><p>Only used for the causal risk panel - never fed to the classifier</p></div></div>
+        <div class="form-grid">
+          <label>Age (years)<input id="age" type="number" min="1" max="120" placeholder="e.g. 65"></label>
+          <label>BMI (kg/m&sup2;)<input id="bmi" type="number" min="5" max="80" step=".1" placeholder="e.g. 32.0"></label>
+          <label>Family history of knee replacement<select id="family_history"><option value="">Not given</option><option value="yes">Yes</option><option value="no">No</option></select></label>
+        </div>
+        <p class="hint">Age/BMI outside the OAI study population (45-79 / 16.9-48.7) will be refused by the causal panel, not silently extrapolated.</p>
+      </div>
+
+      <div class="clinical-grid">
+        <div class="card">
+          <div class="section-head"><div><h3>Knee X-ray</h3><p>Sent to the local Flask server only when you run the assessment</p></div><span class="tag">PNG / JPG</span></div>
+          <label class="dropzone" for="xray-input" id="dropzone">
+            <div class="upload-icon">&uarr;</div><b>Upload knee X-ray</b><span>Choose an image from this device</span>
+            <input type="file" id="xray-input" accept="image/png,image/jpeg,.jpg,.jpeg">
+          </label>
+          <div class="image-view hidden" id="image-view"><img id="xray-preview" alt="Selected knee X-ray preview"><div class="image-toolbar"><span id="image-name">Image selected</span><button class="text-btn" id="remove-image" type="button">Remove</button></div></div>
+          <div class="empty-image" id="empty-image"><div class="bone-symbol">&#9121;</div><span>No X-ray selected</span></div>
+        </div>
+
+        <div class="card prediction-card">
+          <div class="section-head"><div><h3>KL grade assessment</h3><p>Final model: ensemble if it beat kl_final on validation, else kl_final</p></div><span class="tag muted" id="model-used-tag">NOT RUN</span></div>
+          <div class="prediction-empty" id="prediction-panel"><div class="grade-icon">&mdash;</div><b>Awaiting assessment</b><p>Upload an X-ray and run the model.</p></div>
+          <div class="grade-scale">
+            <div><b>KL 0</b><span>None</span></div><div><b>KL 1</b><span>Doubtful</span></div><div><b>KL 2</b><span>Mild</span></div><div><b>KL 3</b><span>Moderate</span></div><div><b>KL 4</b><span>Severe</span></div>
+          </div>
+          <button class="btn primary full" id="analyze-btn" type="button">Run assessment <span>&rarr;</span></button>
+          <p class="hint center" id="analysis-status">No prediction has been made.</p>
+        </div>
+      </div>
+
+      <div class="clinical-grid lower-grid">
+        <div class="card">
+          <div class="section-head"><div><h3>Explainability</h3><p>Integrated Gradients (kl_final) and the bug-fixed Grad-CAM</p></div></div>
+          <div id="xai-panel"><div class="empty-state"><div class="empty-big">&#9673;</div><h3>No explanation yet</h3><p>Run an assessment first.</p></div></div>
+        </div>
+        <div class="card">
+          <div class="section-head"><div><h3>Similar training cases</h3><p>3 nearest neighbors by pooled feature similarity</p></div></div>
+          <div id="similar-cases-panel"><div class="empty-state"><div class="empty-big">&#9121;</div><h3>No cases yet</h3><p>Run an assessment first.</p></div></div>
+        </div>
+      </div>
+
+      <div class="clinical-grid lower-grid">
+        <div class="card">
+          <div class="section-head"><div><h3>Causal risk panel</h3><p>Population and (if age/BMI given) individual estimates</p></div></div>
+          <div id="causal-panel-result"><div class="empty-state"><div class="empty-big">&#9121;</div><h3>No causal estimate yet</h3><p>Run an assessment first.</p></div></div>
+        </div>
+      </div>
+      <div class="disclaimer"><b>Research prototype — not for clinical use.</b> This prototype does not diagnose or recommend treatment.</div>
+    </section>
+
+    <section class="view hidden" id="view-causal">
+      <div class="welcome"><div><h2>Causal insights (population-level, historical)</h2><p>The project's existing causal-analysis output files, read-only.</p></div></div>
+      <div class="card">
+        <div class="section-head"><div><h3>Obesity -&gt; KL grade (primary analysis)</h3><p>One knee per patient; n = 4,071</p></div></div>
+        <div class="causal-results" id="causal-results"></div>
+        <div class="small-warning"><b>Interpret carefully:</b> observational estimates under this DAG's assumptions; not proof of an individual patient's cause of OA.</div>
+      </div>
+    </section>
+
+    <footer>Local research prototype &middot; No patient database &middot; Research prototype — not for clinical use.</footer>
+  </main>
+</div>
+<div class="toast" id="toast" role="status"></div>
+<script src="/static/js/app.js"></script>
+</body>
+</html>

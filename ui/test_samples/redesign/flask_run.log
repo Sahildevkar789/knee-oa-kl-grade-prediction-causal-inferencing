@@ -1,0 +1,55 @@
+﻿.\venv\Scripts\python.exe : 
+C:\Users\Ranjeet\Desktop\knee_oa_project\venv\Lib\site-packages\albumentations\check_version.py:147: UserWarning: 
+Error fetching version info The read operation timed out
+At line:1 char:431
++ ... lyContinue; .\venv\Scripts\python.exe ui\app.py *> ui\test_samples\re ...
++                 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo          : NotSpecified: (C:\Users\Ranjee...ation timed out:String) [], RemoteException
+    + FullyQualifiedErrorId : NativeCommandError
+ 
+  data = fetch_version_info()
+=======================================================
+Knee OA KL-grade research webapp (ui/)
+Project root: C:\Users\Ranjeet\Desktop\knee_oa_project
+Disclaimer: Research prototype — not for clinical use.
+=======================================================
+ * Serving Flask app 'app'
+ * Debug mode: off
+WARNING: This is a development server. Do not use it in a production deployment. Use a production WSGI server instead.
+ * Running on http://127.0.0.1:5050
+Press CTRL+C to quit
+127.0.0.1 - - [27/Oct/2026 23:29:30] "GET /api/health HTTP/1.1" 200 -
+127.0.0.1 - - [27/Oct/2026 23:29:30] "GET /api/causal_insights HTTP/1.1" 200 -
+127.0.0.1 - - [27/Oct/2026 23:29:30] "POST /api/whatif HTTP/1.1" 200 -
+sys:1: UserWarning: Full backward hook is firing when gradients are computed with respect to module outputs since no 
+inputs require gradients. See 
+https://docs.pytorch.org/docs/main/generated/torch.nn.Module.html#torch.nn.Module.register_full_backward_hook for more 
+details.
+127.0.0.1 - - [27/Oct/2026 23:31:29] "POST /api/analyze HTTP/1.1" 200 -
+sys:1: UserWarning: Full backward hook is firing when gradients are computed with respect to module outputs since no 
+inputs require gradients. See 
+https://docs.pytorch.org/docs/main/generated/torch.nn.Module.html#torch.nn.Module.register_full_backward_hook for more 
+details.
+127.0.0.1 - - [27/Oct/2026 23:31:35] "POST /api/analyze HTTP/1.1" 200 -
+sys:1: UserWarning: Full backward hook is firing when gradients are computed with respect to module outputs since no 
+inputs require gradients. See 
+https://docs.pytorch.org/docs/main/generated/torch.nn.Module.html#torch.nn.Module.register_full_backward_hook for more 
+details.
+127.0.0.1 - - [27/Oct/2026 23:31:40] "POST /api/analyze HTTP/1.1" 200 -
+sys:1: UserWarning: Full backward hook is firing when gradients are computed with respect to module outputs since no 
+inputs require gradients. See 
+https://docs.pytorch.org/docs/main/generated/torch.nn.Module.html#torch.nn.Module.register_full_backward_hook for more 
+details.
+127.0.0.1 - - [27/Oct/2026 23:31:46] "POST /api/analyze HTTP/1.1" 200 -
+sys:1: UserWarning: Full backward hook is firing when gradients are computed with respect to module outputs since no 
+inputs require gradients. See 
+https://docs.pytorch.org/docs/main/generated/torch.nn.Module.html#torch.nn.Module.register_full_backward_hook for more 
+details.
+127.0.0.1 - - [27/Oct/2026 23:31:51] "POST /api/analyze HTTP/1.1" 200 -
+127.0.0.1 - - [27/Oct/2026 23:32:36] "POST /api/whatif HTTP/1.1" 200 -
+sys:1: UserWarning: Full backward hook is firing when gradients are computed with respect to module outputs since no 
+inputs require gradients. See 
+https://docs.pytorch.org/docs/main/generated/torch.nn.Module.html#torch.nn.Module.register_full_backward_hook for more 
+details.
+127.0.0.1 - - [27/Oct/2026 23:32:52] "POST /api/analyze HTTP/1.1" 200 -
+127.0.0.1 - - [27/Oct/2026 23:32:59] "GET / HTTP/1.1" 200 -

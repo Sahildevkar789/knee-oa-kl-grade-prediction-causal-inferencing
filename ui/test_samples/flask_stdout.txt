@@ -1,0 +1,7 @@
+=======================================================
+Knee OA KL-grade research webapp (ui/)
+Project root: C:\Users\Ranjeet\Desktop\knee_oa_project
+Disclaimer: Research prototype — not for clinical use.
+=======================================================
+ * Serving Flask app 'app'
+ * Debug mode: off

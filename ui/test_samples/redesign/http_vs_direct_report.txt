@@ -1,0 +1,7 @@
+dataset/test/0/9003175L.png: http_grade=0 direct_grade=0 http_conf=0.9418 direct_conf=0.9418 match=True thumbs_ok=True ig_present=True cam_present=True causal_available=True
+dataset/test/1/9001400L.png: http_grade=0 direct_grade=0 http_conf=0.8539 direct_conf=0.8539 match=True thumbs_ok=True ig_present=True cam_present=True causal_available=True
+dataset/test/2/9003316R.png: http_grade=0 direct_grade=0 http_conf=0.4905 direct_conf=0.4905 match=True thumbs_ok=True ig_present=True cam_present=True causal_available=True
+dataset/test/3/9011053L.png: http_grade=3 direct_grade=3 http_conf=0.9983 direct_conf=0.9983 match=True thumbs_ok=True ig_present=True cam_present=True causal_available=True
+dataset/test/4/9012867R.png: http_grade=4 direct_grade=4 http_conf=0.9978 direct_conf=0.9978 match=True thumbs_ok=True ig_present=True cam_present=True causal_available=True
+
+ALL_MATCH: True

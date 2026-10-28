@@ -1,0 +1,5 @@
+# New packages needed specifically for ui/ (the main project venv already has everything
+# else model_bridge.py imports - torch, opencv-python, econml, captum, pytorch-grad-cam -
+# installed during earlier phases of this project).
+Flask>=3.0,<4.0
+Werkzeug>=3.0,<4.0

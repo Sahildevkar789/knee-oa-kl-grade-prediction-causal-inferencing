@@ -1,0 +1,77 @@
+[
+  {
+    "path": "dataset/test/0/9003175L.png",
+    "true_grade": 0,
+    "pred_grade": 0,
+    "confidence": 0.9418427677189348,
+    "probabilities": {
+      "KL0": 0.9418427677189348,
+      "KL1": 0.0548645494907815,
+      "KL2": 0.0031783191517435554,
+      "KL3": 0.0,
+      "KL4": 0.00011436363854015967
+    },
+    "model_used": "ensemble",
+    "uncertain": false
+  },
+  {
+    "path": "dataset/test/1/9001400L.png",
+    "true_grade": 1,
+    "pred_grade": 0,
+    "confidence": 0.853900175475612,
+    "probabilities": {
+      "KL0": 0.853900175475612,
+      "KL1": 0.13795579409451927,
+      "KL2": 0.008076818082540916,
+      "KL3": 0.0,
+      "KL4": 6.72123473277707e-05
+    },
+    "model_used": "ensemble",
+    "uncertain": false
+  },
+  {
+    "path": "dataset/test/2/9003316R.png",
+    "true_grade": 2,
+    "pred_grade": 0,
+    "confidence": 0.49050313234329224,
+    "probabilities": {
+      "KL0": 0.49050313234329224,
+      "KL1": 0.3321538120508194,
+      "KL2": 0.17715825188497547,
+      "KL3": 0.00012090327800251544,
+      "KL4": 6.390044291038066e-05
+    },
+    "model_used": "ensemble",
+    "uncertain": true
+  },
+  {
+    "path": "dataset/test/3/9011053L.png",
+    "true_grade": 3,
+    "pred_grade": 3,
+    "confidence": 0.9983016831584768,
+    "probabilities": {
+      "KL0": 0.0004006063088878461,
+      "KL1": 0.0005738527444631166,
+      "KL2": 0.0,
+      "KL3": 0.9983016831584768,
+      "KL4": 0.0007238577881722328
+    },
+    "model_used": "ensemble",
+    "uncertain": false
+  },
+  {
+    "path": "dataset/test/4/9012867R.png",
+    "true_grade": 4,
+    "pred_grade": 4,
+    "confidence": 0.9977846564736276,
+    "probabilities": {
+      "KL0": 0.0020873247490159745,
+      "KL1": 0.0,
+      "KL2": 0.0,
+      "KL3": 0.0001280187773564289,
+      "KL4": 0.9977846564736276
+    },
+    "model_used": "ensemble",
+    "uncertain": false
+  }
+]
